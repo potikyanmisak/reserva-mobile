@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Reserva",
+    "slug": "reserva-premium",
+    "version": "1.0.0",
+    "entryPoint": "./index.js",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.reserva.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1A1A1A"
+      },
+      "package": "com.reserva.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      "expo-image-picker",
+      "@react-native-community/datetimepicker"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "ca1ac8d5-b463-4a88-95f7-74fe676070c4"
+      }
+    },
+    "owner": "mpotikyan"
+  }
+}
