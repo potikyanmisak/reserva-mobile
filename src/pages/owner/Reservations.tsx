@@ -19,6 +19,7 @@ import {
   History,
   Bell,
   ChefHat,
+  Phone,
 } from "lucide-react-native";
 import { format } from "date-fns";
 import { useLanguage } from "../../lib/LanguageContext";
@@ -274,6 +275,13 @@ function ReservationItem({ reservation, onAction, t }: any) {
           <Text style={styles.detailText}>{reservation.time}</Text>
         </View>
       </View>
+
+      {reservation.customer_phone ? (
+        <View style={styles.detailItem}>
+          <Phone size={14} color={theme.colors.textDim} />
+          <Text style={styles.detailText}>{reservation.customer_phone}</Text>
+        </View>
+      ) : null}
 
       {isPending && (
         <View style={styles.actionRow}>

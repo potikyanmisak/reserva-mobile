@@ -172,6 +172,9 @@ async function startServer() {
     if (!userTableInfo.some((col: any) => col.name === "push_token")) {
       db.exec("ALTER TABLE users ADD COLUMN push_token TEXT");
     }
+    if (!userTableInfo.some((col: any) => col.name === "phone")) {
+      db.exec("ALTER TABLE users ADD COLUMN phone TEXT");
+    }
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS restaurants (
@@ -605,7 +608,7 @@ async function startServer() {
     });
 
     app.post("/api/register", async (req, res) => {
-      const { email, password, name, surname, role } = req.body;
+      const { email, password, name, surname, role, phone } = req.body;
       if (!email || !password || (role !== "owner" && (!name || !surname))) {
         return res.status(400).json({
           error:
@@ -633,11 +636,12 @@ async function startServer() {
           // Unverified account from an abandoned signup — refresh their
           // details/code instead of blocking them.
           db.prepare(
-            "UPDATE users SET password = ?, name = ?, surname = ?, role = ?, verification_code = ?, code_expires_at = ? WHERE id = ?",
+            "UPDATE users SET password = ?, name = ?, surname = ?, phone = ? , role = ?, verification_code = ?, code_expires_at = ? WHERE id = ?",
           ).run(
             hashedPassword,
             name,
             surname,
+            phone,
             role || "customer",
             code,
             expiresAt,
@@ -659,13 +663,14 @@ async function startServer() {
         }
 
         const stmt = db.prepare(
-          "INSERT INTO users (email, password, name, surname, role, verification_code, code_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO users (email, password, name, surname, phone , role, verification_code, code_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         );
         const result = stmt.run(
           email,
           hashedPassword,
           name,
           surname,
+          phone,
           role || "customer",
           code,
           expiresAt,
@@ -2456,12 +2461,12 @@ async function startServer() {
         req.user.role === "admin"
           ? db
               .prepare(
-                `SELECT r.*, u.name as customer_name, u.surname as customer_surname FROM reservations r JOIN users u ON r.customer_id = u.id JOIN restaurants res ON r.restaurant_id = res.id ORDER BY r.created_at DESC`,
+                `SELECT r.*, u.name as customer_name, u.surname as customer_surname, u.phone as customer_phone FROM reservations r JOIN users u ON r.customer_id = u.id JOIN restaurants res ON r.restaurant_id = res.id ORDER BY r.created_at DESC`,
               )
               .all()
           : db
               .prepare(
-                `SELECT r.*, u.name as customer_name, u.surname as customer_surname, u.reliability_score FROM reservations r JOIN users u ON r.customer_id = u.id JOIN restaurants res ON r.restaurant_id = res.id WHERE res.owner_id = ? ORDER BY r.created_at DESC`,
+                `SELECT r.*, u.name as customer_name, u.surname as customer_surname, u.phone as customer_phone, u.reliability_score FROM reservations r JOIN users u ON r.customer_id = u.id JOIN restaurants res ON r.restaurant_id = res.id WHERE res.owner_id = ? ORDER BY r.created_at DESC`,
               )
               .all(req.user.id);
       res.json(reservations);

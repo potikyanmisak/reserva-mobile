@@ -25,6 +25,7 @@ import {
   Plus,
   Camera,
   ChefHat,
+  Phone,
 } from "lucide-react-native";
 import { theme } from "../theme";
 
@@ -33,7 +34,13 @@ const { width } = Dimensions.get("window");
 import { getApiUrl } from "../lib/api";
 
 const EMPTY_LOGIN = { email: "", password: "" };
-const EMPTY_SIGNUP = { email: "", password: "", name: "", surname: "" };
+const EMPTY_SIGNUP = {
+  email: "",
+  password: "",
+  name: "",
+  surname: "",
+  phone: "",
+};
 
 export default function AuthPage() {
   const insets = useSafeAreaInsets();
@@ -43,6 +50,10 @@ export default function AuthPage() {
   // Separate state per form — Sign In and Sign Up no longer share fields.
   const [loginData, setLoginData] = useState(EMPTY_LOGIN);
   const [signupData, setSignupData] = useState(EMPTY_SIGNUP);
+  // Multi-step signup: details (name/surname) -> phone -> credentials (email/password)
+  const [signupStage, setSignupStage] = useState<
+    "details" | "phone" | "credentials"
+  >("details");
 
   const [step, setStep] = useState(1);
   const [verificationCode, setVerificationCode] = useState("");
@@ -77,6 +88,7 @@ export default function AuthPage() {
     // Each form keeps its own state, so there's nothing to clear here —
     // but we do reset transient UI state tied to the form being left.
     setPasswordTouched(false);
+    setSignupStage("details");
   };
 
   const handleSubmit = async () => {
@@ -97,6 +109,12 @@ export default function AuthPage() {
         (!signupData.name.trim() || !signupData.surname.trim())
       ) {
         setError("Name and Surname are required.");
+        setLoading(false);
+        return;
+      }
+
+      if (!isLogin && role === "customer" && !signupData.phone.trim()) {
+        setError("Phone number is required.");
         setLoading(false);
         return;
       }
@@ -137,6 +155,28 @@ export default function AuthPage() {
       setError(err.message);
       setLoading(false);
     }
+  };
+
+  const handleDetailsNext = () => {
+    setError("");
+    if (
+      role === "customer" &&
+      (!signupData.name.trim() || !signupData.surname.trim())
+    ) {
+      setError("Name and Surname are required.");
+      return;
+    }
+    setSignupStage(role === "customer" ? "phone" : "credentials");
+  };
+
+  const handlePhoneNext = () => {
+    setError("");
+    const digitsOnly = signupData.phone.replace(/\D/g, "");
+    if (!signupData.phone.trim() || digitsOnly.length < 6) {
+      setError("Please enter a valid phone number.");
+      return;
+    }
+    setSignupStage("credentials");
   };
 
   const handleVerify = async () => {
@@ -474,162 +514,240 @@ export default function AuthPage() {
             </View>
           ) : (
             <View style={styles.form}>
-              <View style={styles.roleGrid}>
-                <Pressable
-                  onPress={() => setRole("customer")}
-                  style={[
-                    styles.roleButton,
-                    role === "customer" && styles.activeRoleButton,
-                  ]}
-                >
-                  <UserIcon
-                    color={
-                      role === "customer"
-                        ? theme.colors.oliveMuted
-                        : theme.colors.textDim
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.roleText,
-                      role === "customer" && styles.activeRoleText,
-                    ]}
-                  >
-                    Customer
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => setRole("owner")}
-                  style={[
-                    styles.roleButton,
-                    role === "owner" && styles.activeRoleButton,
-                  ]}
-                >
-                  <ChefHat
-                    color={
-                      role === "owner"
-                        ? theme.colors.oliveMuted
-                        : theme.colors.textDim
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.roleText,
-                      role === "owner" && styles.activeRoleText,
-                    ]}
-                  >
-                    Owner
-                  </Text>
-                </Pressable>
-              </View>
-
-              {role === "customer" && (
-                <View style={styles.row}>
-                  <View style={{ flex: 1 }}>
-                    <Input
-                      icon={<UserIcon size={18} color={theme.colors.textDim} />}
-                      placeholder="Name"
-                      value={signupData.name}
-                      onChangeText={(val) =>
-                        setSignupData({ ...signupData, name: val })
-                      }
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Input
-                      icon={<UserIcon size={18} color={theme.colors.textDim} />}
-                      placeholder="Surname"
-                      value={signupData.surname}
-                      onChangeText={(val) =>
-                        setSignupData({ ...signupData, surname: val })
-                      }
-                    />
-                  </View>
-                </View>
-              )}
-
-              <Input
-                icon={<Mail size={18} color={theme.colors.textDim} />}
-                placeholder="Email"
-                keyboardType="email-address"
-                value={signupData.email}
-                onChangeText={(val) =>
-                  setSignupData({ ...signupData, email: val })
-                }
-              />
-              <Input
-                icon={<Lock size={18} color={theme.colors.textDim} />}
-                placeholder="Password"
-                secureTextEntry
-                value={signupData.password}
-                onChangeText={(val) => {
-                  setSignupData({ ...signupData, password: val });
-                  if (!passwordTouched && val.length > 0)
-                    setPasswordTouched(true);
-                }}
-              />
-
-              {passwordTouched && (
-                <View style={styles.passwordHints}>
-                  <View style={styles.hintRow}>
-                    <View
+              {signupStage === "details" && (
+                <>
+                  <View style={styles.roleGrid}>
+                    <Pressable
+                      onPress={() => setRole("customer")}
                       style={[
-                        styles.hintDot,
-                        hasMinLength
-                          ? { backgroundColor: "#16a34a" }
-                          : { backgroundColor: theme.colors.red },
-                      ]}
-                    />
-                    <Text
-                      style={[
-                        styles.hintText,
-                        { color: hasMinLength ? "#16a34a" : theme.colors.red },
+                        styles.roleButton,
+                        role === "customer" && styles.activeRoleButton,
                       ]}
                     >
-                      At least 8 characters
-                    </Text>
-                  </View>
-                  <View style={styles.hintRow}>
-                    <View
+                      <UserIcon
+                        color={
+                          role === "customer"
+                            ? theme.colors.oliveMuted
+                            : theme.colors.textDim
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.roleText,
+                          role === "customer" && styles.activeRoleText,
+                        ]}
+                      >
+                        Customer
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => setRole("owner")}
                       style={[
-                        styles.hintDot,
-                        hasNumber
-                          ? { backgroundColor: "#16a34a" }
-                          : { backgroundColor: theme.colors.red },
-                      ]}
-                    />
-                    <Text
-                      style={[
-                        styles.hintText,
-                        { color: hasNumber ? "#16a34a" : theme.colors.red },
+                        styles.roleButton,
+                        role === "owner" && styles.activeRoleButton,
                       ]}
                     >
-                      Contains numbers
-                    </Text>
+                      <ChefHat
+                        color={
+                          role === "owner"
+                            ? theme.colors.oliveMuted
+                            : theme.colors.textDim
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.roleText,
+                          role === "owner" && styles.activeRoleText,
+                        ]}
+                      >
+                        Owner
+                      </Text>
+                    </Pressable>
                   </View>
-                </View>
+
+                  {role === "customer" && (
+                    <View style={styles.row}>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          icon={
+                            <UserIcon size={18} color={theme.colors.textDim} />
+                          }
+                          placeholder="Name"
+                          value={signupData.name}
+                          onChangeText={(val) =>
+                            setSignupData({ ...signupData, name: val })
+                          }
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Input
+                          icon={
+                            <UserIcon size={18} color={theme.colors.textDim} />
+                          }
+                          placeholder="Surname"
+                          value={signupData.surname}
+                          onChangeText={(val) =>
+                            setSignupData({ ...signupData, surname: val })
+                          }
+                        />
+                      </View>
+                    </View>
+                  )}
+
+                  {error ? (
+                    <Text style={styles.errorTextCenter}>{error}</Text>
+                  ) : null}
+
+                  <Pressable
+                    onPress={handleDetailsNext}
+                    style={({ pressed }) => [
+                      styles.primaryButton,
+                      pressed && { transform: [{ scale: 0.95 }] },
+                    ]}
+                  >
+                    <Text style={styles.primaryButtonText}>Next</Text>
+                  </Pressable>
+                </>
               )}
 
-              {error ? (
-                <Text style={styles.errorTextCenter}>{error}</Text>
-              ) : null}
+              {signupStage === "phone" && (
+                <>
+                  <Input
+                    icon={<Phone size={18} color={theme.colors.textDim} />}
+                    placeholder="Phone Number"
+                    keyboardType="phone-pad"
+                    value={signupData.phone}
+                    onChangeText={(val) =>
+                      setSignupData({ ...signupData, phone: val })
+                    }
+                  />
 
-              <Pressable
-                onPress={handleSubmit}
-                style={({ pressed }) => [
-                  styles.primaryButton,
-                  pressed && { transform: [{ scale: 0.95 }] },
-                ]}
-              >
-                {loading ? (
-                  <ActivityIndicator color={theme.colors.white} />
-                ) : (
-                  <View style={styles.buttonContent}>
-                    <UserPlus size={20} color={theme.colors.white} />
-                    <Text style={styles.primaryButtonText}>Get Started</Text>
-                  </View>
-                )}
-              </Pressable>
+                  {error ? (
+                    <Text style={styles.errorTextCenter}>{error}</Text>
+                  ) : null}
+
+                  <Pressable
+                    onPress={handlePhoneNext}
+                    style={({ pressed }) => [
+                      styles.primaryButton,
+                      pressed && { transform: [{ scale: 0.95 }] },
+                    ]}
+                  >
+                    <Text style={styles.primaryButtonText}>Next</Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={() => {
+                      setSignupStage("details");
+                      setError("");
+                    }}
+                  >
+                    <Text style={styles.backText}>Back</Text>
+                  </Pressable>
+                </>
+              )}
+
+              {signupStage === "credentials" && (
+                <>
+                  <Input
+                    icon={<Mail size={18} color={theme.colors.textDim} />}
+                    placeholder="Email"
+                    keyboardType="email-address"
+                    value={signupData.email}
+                    onChangeText={(val) =>
+                      setSignupData({ ...signupData, email: val })
+                    }
+                  />
+                  <Input
+                    icon={<Lock size={18} color={theme.colors.textDim} />}
+                    placeholder="Password"
+                    secureTextEntry
+                    value={signupData.password}
+                    onChangeText={(val) => {
+                      setSignupData({ ...signupData, password: val });
+                      if (!passwordTouched && val.length > 0)
+                        setPasswordTouched(true);
+                    }}
+                  />
+
+                  {passwordTouched && (
+                    <View style={styles.passwordHints}>
+                      <View style={styles.hintRow}>
+                        <View
+                          style={[
+                            styles.hintDot,
+                            hasMinLength
+                              ? { backgroundColor: "#16a34a" }
+                              : { backgroundColor: theme.colors.red },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.hintText,
+                            {
+                              color: hasMinLength
+                                ? "#16a34a"
+                                : theme.colors.red,
+                            },
+                          ]}
+                        >
+                          At least 8 characters
+                        </Text>
+                      </View>
+                      <View style={styles.hintRow}>
+                        <View
+                          style={[
+                            styles.hintDot,
+                            hasNumber
+                              ? { backgroundColor: "#16a34a" }
+                              : { backgroundColor: theme.colors.red },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.hintText,
+                            { color: hasNumber ? "#16a34a" : theme.colors.red },
+                          ]}
+                        >
+                          Contains numbers
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {error ? (
+                    <Text style={styles.errorTextCenter}>{error}</Text>
+                  ) : null}
+
+                  <Pressable
+                    onPress={handleSubmit}
+                    style={({ pressed }) => [
+                      styles.primaryButton,
+                      pressed && { transform: [{ scale: 0.95 }] },
+                    ]}
+                  >
+                    {loading ? (
+                      <ActivityIndicator color={theme.colors.white} />
+                    ) : (
+                      <View style={styles.buttonContent}>
+                        <UserPlus size={20} color={theme.colors.white} />
+                        <Text style={styles.primaryButtonText}>
+                          Get Started
+                        </Text>
+                      </View>
+                    )}
+                  </Pressable>
+
+                  <Pressable
+                    onPress={() => {
+                      setSignupStage(role === "customer" ? "phone" : "details");
+                      setError("");
+                    }}
+                  >
+                    <Text style={styles.backText}>Back</Text>
+                  </Pressable>
+                </>
+              )}
             </View>
           )}
         </View>
