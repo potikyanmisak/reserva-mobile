@@ -381,6 +381,13 @@ async function startServer() {
     addRestaurantCol("secondary_phone", "TEXT");
     addRestaurantCol("created_at", "DATETIME DEFAULT '1970-01-01 00:00:00'");
     addRestaurantCol("duration_mode", "TEXT DEFAULT 'manual'"); // 'manual' | 'auto'
+     addRestaurantCol("default_duration_small_party", "INTEGER DEFAULT 75");
+     addRestaurantCol("default_duration_medium_party", "INTEGER DEFAULT 90");
+     addRestaurantCol("default_duration_large_party", "INTEGER DEFAULT 120");
+     addRestaurantCol(
+       "max_concurrent_bookings_no_tables",
+       "INTEGER DEFAULT 10",
+     );
 
     const notifTableInfo = db.prepare("PRAGMA table_info(notifications)").all();
     if (!notifTableInfo.some((col: any) => col.name === "read")) {
@@ -591,6 +598,24 @@ async function startServer() {
       }
     };
 
+    function asyncHandler(fn: any) {
+      return (req: any, res: any, next: any) => {
+        Promise.resolve(fn(req, res, next)).catch(next);
+      };
+    }
+
+    function withRetry<T>(fn: () => T, attempts = 3): T {
+      for (let i = 0; i < attempts; i++) {
+        try {
+          return fn();
+        } catch (err: any) {
+          if (err.code === "SQLITE_BUSY" && i < attempts - 1) continue;
+          throw err;
+        }
+      }
+      throw new Error("unreachable");
+    }
+
     app.get("/api/notifications", authenticate, (req: any, res) => {
       try {
         const notifs = db
@@ -644,28 +669,23 @@ async function startServer() {
               code: "USER_EXISTS",
             });
           }
-
-          // Unverified account from an abandoned signup — refresh their
-          // details/code instead of blocking them.
           db.prepare(
             "UPDATE users SET password = ?, name = ?, surname = ?, phone = ? , role = ?, verification_code = ?, code_expires_at = ? WHERE id = ?",
           ).run(
             hashedPassword,
-            name,
-            surname,
-            phone,
+            name ?? null,
+            surname ?? null,
+            phone ?? null,
             role || "customer",
             code,
             expiresAt,
             existingUser.id,
           );
-
           await sendEmail(
             email,
             "Verify your Reserva account",
             buildVerificationEmail(name || "there", code),
           );
-
           return res.json({ email, userId: existingUser.id });
         }
 
@@ -675,9 +695,9 @@ async function startServer() {
         const result = stmt.run(
           email,
           hashedPassword,
-          name,
-          surname,
-          phone,
+          name ?? null,
+          surname ?? null,
+          phone ?? null,
           role || "customer",
           code,
           expiresAt,
@@ -696,143 +716,158 @@ async function startServer() {
       }
     });
 
-    app.post("/api/verify", async (req, res) => {
-      const { email, code } = req.body;
-      const user: any = db
-        .prepare(
-          "SELECT * FROM users WHERE email = ? AND verification_code = ?",
-        )
-        .get(email, code);
-      if (!user)
-        return res.status(400).json({ error: "Invalid verification code" });
-      if (new Date(user.code_expires_at) < new Date())
-        return res.status(400).json({ error: "Code has expired" });
-      db.prepare(
-        "UPDATE users SET is_verified = 1, verification_code = NULL, code_expires_at = NULL WHERE id = ?",
-      ).run(user.id);
-      const token = jwt.sign(
-        { id: user.id, email: user.email, role: user.role },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN },
-      );
-      res.json({
-        token,
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          surname: user.surname,
-          role: user.role,
-          photo_url: user.photo_url,
-        },
-      });
-    });
+    app.post(
+      "/api/login",
+      asyncHandler(async (req: any, res: any) => {
+        const { email, password } = req.body;
+        const user: any = db
+          .prepare("SELECT * FROM users WHERE email = ?")
+          .get(email);
+        if (!user)
+          return res
+            .status(404)
+            .json({ error: "No account found with this email address." });
+        if (!(await bcrypt.compare(password, user.password)))
+          return res.status(401).json({ error: "Invalid credentials" });
+        if (user.is_verified === 0)
+          return res
+            .status(403)
+            .json({ error: "Email not verified", unverified: true });
+        const token = jwt.sign(
+          { id: user.id, email: user.email, role: user.role },
+          JWT_SECRET,
+          { expiresIn: JWT_EXPIRES_IN },
+        );
+        res.json({
+          token,
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            surname: user.surname,
+            role: user.role,
+            photo_url: user.photo_url,
+          },
+        });
+      }),
+    );
 
-    app.post("/api/resend-code", async (req, res) => {
-      const { email } = req.body;
-      const user: any = db
-        .prepare("SELECT * FROM users WHERE email = ?")
-        .get(email);
-      if (!user) return res.status(404).json({ error: "User not found" });
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
-      db.prepare(
-        "UPDATE users SET verification_code = ?, code_expires_at = ? WHERE id = ?",
-      ).run(code, expiresAt, user.id);
-      await sendEmail(
-        email,
-        "Verify your Reserva account",
-        buildVerificationEmail(user.name || "there", code),
-      );
-      res.json({ success: true });
-    });
+    app.post(
+      "/api/verify",
+      asyncHandler(async (req: any, res: any) => {
+        const { email, code } = req.body;
+        const user: any = db
+          .prepare(
+            "SELECT * FROM users WHERE email = ? AND verification_code = ?",
+          )
+          .get(email, code);
+        if (!user)
+          return res.status(400).json({ error: "Invalid verification code" });
+        if (new Date(user.code_expires_at) < new Date())
+          return res.status(400).json({ error: "Code has expired" });
+        db.prepare(
+          "UPDATE users SET is_verified = 1, verification_code = NULL, code_expires_at = NULL WHERE id = ?",
+        ).run(user.id);
+        const token = jwt.sign(
+          { id: user.id, email: user.email, role: user.role },
+          JWT_SECRET,
+          { expiresIn: JWT_EXPIRES_IN },
+        );
+        res.json({
+          token,
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            surname: user.surname,
+            role: user.role,
+            photo_url: user.photo_url,
+          },
+        });
+      }),
+    );
 
-    app.post("/api/login", async (req, res) => {
-      const { email, password } = req.body;
-      const user: any = db
-        .prepare("SELECT * FROM users WHERE email = ?")
-        .get(email);
-      if (!user)
-        return res
-          .status(404)
-          .json({ error: "No account found with this email address." });
-      if (!(await bcrypt.compare(password, user.password)))
-        return res.status(401).json({ error: "Invalid credentials" });
-      if (user.is_verified === 0)
-        return res
-          .status(403)
-          .json({ error: "Email not verified", unverified: true });
-      const token = jwt.sign(
-        { id: user.id, email: user.email, role: user.role },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN },
-      );
-      res.json({
-        token,
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          surname: user.surname,
-          role: user.role,
-          photo_url: user.photo_url,
-        },
-      });
-    });
+    app.post(
+      "/api/resend-code",
+      asyncHandler(async (req: any, res: any) => {
+        const { email } = req.body;
+        const user: any = db
+          .prepare("SELECT * FROM users WHERE email = ?")
+          .get(email);
+        if (!user) return res.status(404).json({ error: "User not found" });
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
+        db.prepare(
+          "UPDATE users SET verification_code = ?, code_expires_at = ? WHERE id = ?",
+        ).run(code, expiresAt, user.id);
+        await sendEmail(
+          email,
+          "Verify your Reserva account",
+          buildVerificationEmail(user.name || "there", code),
+        );
+        res.json({ success: true });
+      }),
+    );
 
-    app.post("/api/auth/forgot-password", async (req, res) => {
-      const { email } = req.body;
-      const user: any = db
-        .prepare("SELECT * FROM users WHERE email = ?")
-        .get(email);
-      if (!user)
-        return res
-          .status(404)
-          .json({ error: "No account found with this email address." });
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
-      db.prepare(
-        "UPDATE users SET verification_code = ?, code_expires_at = ? WHERE id = ?",
-      ).run(code, expiresAt, user.id);
-      await sendEmail(
-        email,
-        "Verify your Reserva account",
-        buildVerificationEmail(user.name || "there", code),
-      );
-      res.json({ success: true });
-    });
+    app.post(
+      "/api/auth/forgot-password",
+      asyncHandler(async (req: any, res: any) => {
+        const { email } = req.body;
+        const user: any = db
+          .prepare("SELECT * FROM users WHERE email = ?")
+          .get(email);
+        if (!user)
+          return res
+            .status(404)
+            .json({ error: "No account found with this email address." });
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
+        db.prepare(
+          "UPDATE users SET verification_code = ?, code_expires_at = ? WHERE id = ?",
+        ).run(code, expiresAt, user.id);
+        await sendEmail(
+          email,
+          "Verify your Reserva account",
+          buildVerificationEmail(user.name || "there", code),
+        );
+        res.json({ success: true });
+      }),
+    );
 
-    app.post("/api/auth/verify-reset-code", async (req, res) => {
-      const { email, code } = req.body;
-      const user: any = db
-        .prepare(
-          "SELECT * FROM users WHERE email = ? AND verification_code = ?",
-        )
-        .get(email, code);
-      if (!user)
-        return res.status(400).json({ error: "Invalid or expired code." });
-      if (new Date(user.code_expires_at) < new Date())
-        return res.status(400).json({ error: "Code has expired." });
-      db.prepare(
-        "UPDATE users SET is_verified = 1, verification_code = NULL, code_expires_at = NULL WHERE id = ?",
-      ).run(user.id);
-      const token = jwt.sign(
-        { id: user.id, email: user.email, role: user.role },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN },
-      );
-      res.json({
-        token,
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          surname: user.surname,
-          role: user.role,
-          photo_url: user.photo_url,
-        },
-      });
-    });
+    app.post(
+      "/api/auth/verify-reset-code",
+      asyncHandler(async (req: any, res: any) => {
+        const { email, code } = req.body;
+        const user: any = db
+          .prepare(
+            "SELECT * FROM users WHERE email = ? AND verification_code = ?",
+          )
+          .get(email, code);
+        if (!user)
+          return res.status(400).json({ error: "Invalid or expired code." });
+        if (new Date(user.code_expires_at) < new Date())
+          return res.status(400).json({ error: "Code has expired." });
+        db.prepare(
+          "UPDATE users SET is_verified = 1, verification_code = NULL, code_expires_at = NULL WHERE id = ?",
+        ).run(user.id);
+        const token = jwt.sign(
+          { id: user.id, email: user.email, role: user.role },
+          JWT_SECRET,
+          { expiresIn: JWT_EXPIRES_IN },
+        );
+        res.json({
+          token,
+          user: {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            surname: user.surname,
+            role: user.role,
+            photo_url: user.photo_url,
+          },
+        });
+      }),
+    );
 
     app.post("/api/user/update-photo", authenticate, (req: any, res) => {
       const { photo_url } = req.body;
@@ -1021,10 +1056,10 @@ async function startServer() {
         );
         const result = stmt.run(
           req.user.id,
-          name,
-          description,
+          name ?? null,
+          description ?? null,
           cuisine_type || "General",
-          location,
+          location ?? null,
           logo_url,
           open_time || "09:00",
           close_time || "22:00",
@@ -1198,7 +1233,7 @@ async function startServer() {
     app.post(
       "/api/admin/restaurants/:id/approve",
       authenticate,
-      async (req: any, res) => {
+      asyncHandler(async (req: any, res: any) => {
         if (req.user.role !== "admin")
           return res.status(403).json({ error: "Not authorized" });
         const restaurant: any = db
@@ -1215,19 +1250,19 @@ async function startServer() {
           restaurant.email,
           "🎉 Your restaurant has been approved! — Reserva",
           `<div style="font-family: sans-serif; max-width: 400px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-          <h2 style="color: #0070f3; text-align: center;">RESERVA</h2>
-          <p>Hi ${restaurant.name},</p>
-          <p>Great news! Your restaurant <b>${restaurant.name}</b> has been approved and is now live on Reserva.</p>
-        </div>`,
+      <h2 style="color: #0070f3; text-align: center;">RESERVA</h2>
+      <p>Hi ${restaurant.name},</p>
+      <p>Great news! Your restaurant <b>${restaurant.name}</b> has been approved and is now live on Reserva.</p>
+    </div>`,
         ).catch(console.error);
         res.json({ success: true });
-      },
+      }),
     );
 
     app.post(
       "/api/admin/restaurants/:id/decline",
       authenticate,
-      async (req: any, res) => {
+      asyncHandler(async (req: any, res: any) => {
         if (req.user.role !== "admin")
           return res.status(403).json({ error: "Not authorized" });
         const restaurant: any = db
@@ -1245,14 +1280,14 @@ async function startServer() {
           restaurant.email,
           "Update on your Reserva application",
           `<div style="font-family: sans-serif; max-width: 400px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-          <h2 style="color: #0070f3; text-align: center;">RESERVA</h2>
-          <p>Hi ${restaurant.name},</p>
-          <p>Unfortunately, your restaurant application for <b>${restaurant.name}</b> could not be approved at this time.</p>
-          ${reason ? `<p><b>Reason:</b> ${reason}</p>` : ""}
-        </div>`,
+      <h2 style="color: #0070f3; text-align: center;">RESERVA</h2>
+      <p>Hi ${restaurant.name},</p>
+      <p>Unfortunately, your restaurant application for <b>${restaurant.name}</b> could not be approved at this time.</p>
+      ${reason ? `<p><b>Reason:</b> ${reason}</p>` : ""}
+    </div>`,
         ).catch(console.error);
         res.json({ success: true });
-      },
+      }),
     );
 
     app.post("/api/restaurants/:id/logo", authenticate, (req: any, res) => {
@@ -1772,6 +1807,12 @@ async function startServer() {
     app.post("/api/restaurants/:id/tables", authenticate, (req: any, res) => {
       if (req.user.role !== "owner" && req.user.role !== "admin")
         return res.status(403).json({ error: "Not authorized" });
+      if (req.user.role !== "admin") {
+        const owns = db
+          .prepare("SELECT id FROM restaurants WHERE id = ? AND owner_id = ?")
+          .get(req.params.id, req.user.id);
+        if (!owns) return res.status(403).json({ error: "Not authorized" });
+      }
       const { capacity, location, quantity, shape } = req.body;
       const count = quantity || 1;
       for (let i = 0; i < count; i++)
@@ -1781,12 +1822,23 @@ async function startServer() {
       res.json({ success: true, added: count });
     });
 
+    // DELETE /api/tables/:id
     app.delete("/api/tables/:id", authenticate, (req: any, res) => {
       if (req.user.role !== "owner" && req.user.role !== "admin")
         return res.status(403).json({ error: "Not authorized" });
-      db.prepare("UPDATE tables SET is_active = 0 WHERE id = ?").run(
-        req.params.id,
-      );
+      const result =
+        req.user.role === "admin"
+          ? db
+              .prepare("UPDATE tables SET is_active = 0 WHERE id = ?")
+              .run(req.params.id)
+          : db
+              .prepare(
+                `UPDATE tables SET is_active = 0
+           WHERE id = ? AND restaurant_id IN (SELECT id FROM restaurants WHERE owner_id = ?)`,
+              )
+              .run(req.params.id, req.user.id);
+      if (result.changes === 0)
+        return res.status(403).json({ error: "Not authorized" });
       res.json({ success: true });
     });
 
@@ -1818,9 +1870,10 @@ async function startServer() {
           .prepare(
             `
         SELECT DISTINCT resource_type, location, capacity, shape, features, price_per_hour,
-          MIN(id) as id
+         MIN(id) as id
         FROM resources
         WHERE restaurant_id = ? AND is_active = 1
+        GROUP BY resource_type, location, capacity, shape, features, price_per_hour
         ORDER BY resource_type, capacity
       `,
           )
@@ -1846,6 +1899,12 @@ async function startServer() {
       (req: any, res) => {
         if (req.user.role !== "owner" && req.user.role !== "admin")
           return res.status(403).json({ error: "Not authorized" });
+        if (req.user.role !== "admin") {
+          const owns = db
+            .prepare("SELECT id FROM restaurants WHERE id = ? AND owner_id = ?")
+            .get(req.params.id, req.user.id);
+          if (!owns) return res.status(403).json({ error: "Not authorized" });
+        }
         const {
           name,
           resource_type,
@@ -1861,10 +1920,10 @@ async function startServer() {
         const count = quantity || 1;
         try {
           const insertStmt = db.prepare(`
-          INSERT INTO resources
-            (restaurant_id, name, resource_type, capacity, location, shape, features, min_booking_minutes, max_booking_minutes, price_per_hour)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
+      INSERT INTO resources
+        (restaurant_id, name, resource_type, capacity, location, shape, features, min_booking_minutes, max_booking_minutes, price_per_hour)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
           for (let i = 0; i < count; i++) {
             const resourceName =
               count > 1
@@ -1894,9 +1953,19 @@ async function startServer() {
     app.delete("/api/resources/:id", authenticate, (req: any, res) => {
       if (req.user.role !== "owner" && req.user.role !== "admin")
         return res.status(403).json({ error: "Not authorized" });
-      db.prepare("UPDATE resources SET is_active = 0 WHERE id = ?").run(
-        req.params.id,
-      );
+      const result =
+        req.user.role === "admin"
+          ? db
+              .prepare("UPDATE resources SET is_active = 0 WHERE id = ?")
+              .run(req.params.id)
+          : db
+              .prepare(
+                `UPDATE resources SET is_active = 0
+           WHERE id = ? AND restaurant_id IN (SELECT id FROM restaurants WHERE owner_id = ?)`,
+              )
+              .run(req.params.id, req.user.id);
+      if (result.changes === 0)
+        return res.status(403).json({ error: "Not authorized" });
       res.json({ success: true });
     });
 
@@ -1936,6 +2005,34 @@ async function startServer() {
       } = req.body;
 
       const resolvedStart: string = start_time || time;
+
+      // ── Upfront input validation ────────────────────────────────────────────
+      if (!restaurant_id) {
+        return res.status(400).json({ error: "restaurant_id is required." });
+      }
+      if (!people_count || people_count < 1) {
+        return res
+          .status(400)
+          .json({ error: "A valid people_count is required." });
+      }
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res
+          .status(400)
+          .json({ error: "A valid date (YYYY-MM-DD) is required." });
+      }
+      if (!resolvedStart || !/^\d{2}:\d{2}$/.test(resolvedStart)) {
+        return res
+          .status(400)
+          .json({ error: "A valid start time (HH:MM) is required." });
+      }
+      if (isNaN(new Date(date).getTime())) {
+        return res.status(400).json({ error: "Invalid date." });
+      }
+      if (isNaN(new Date(`${date}T${resolvedStart}`).getTime())) {
+        return res
+          .status(400)
+          .json({ error: "Invalid date/time combination." });
+      }
 
       const user: any = db
         .prepare("SELECT reliability_score FROM users WHERE id = ?")
@@ -2027,8 +2124,10 @@ async function startServer() {
       // ── Resource-based booking ──────────────────────────────────────────────
       if (resource_id) {
         const resource: any = db
-          .prepare("SELECT * FROM resources WHERE id = ? AND is_active = 1")
-          .get(resource_id);
+          .prepare(
+            "SELECT * FROM resources WHERE id = ? AND restaurant_id = ? AND is_active = 1",
+          )
+          .get(resource_id, restaurant_id);
         if (!resource)
           return res.status(404).json({ error: "Resource not found." });
 
@@ -2089,39 +2188,53 @@ async function startServer() {
           }
         }
 
-        const conflict: any = db
-          .prepare(
-            `SELECT COUNT(*) as count FROM reservations
-         WHERE resource_id = ? AND date = ? AND status IN ('pending', 'confirmed')
-           AND start_time < ? AND end_time > ?`,
-          )
-          .get(resource_id, date, resolvedEnd, resolvedStart);
+        const bookResource = db
+          .transaction(() => {
+            const conflict: any = db
+              .prepare(
+                `SELECT COUNT(*) as count FROM reservations
+           WHERE resource_id = ? AND date = ? AND status IN ('pending', 'confirmed')
+             AND start_time < ? AND end_time > ?`,
+              )
+              .get(resource_id, date, resolvedEnd, resolvedStart);
 
-        if (conflict.count > 0) {
+            if (conflict.count > 0) {
+              return { conflict: true };
+            }
+
+            const result = db
+              .prepare(
+                `INSERT INTO reservations
+            (restaurant_id, resource_id, customer_id, people_count,
+             date, time, start_time, end_time, seating_preference)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                restaurant_id,
+                resource_id,
+                req.user.id,
+                people_count,
+                date,
+                resolvedStart,
+                resolvedStart,
+                resolvedEnd,
+                seating_preference,
+              );
+
+            return { conflict: false, result };
+          })
+          .immediate();
+
+        const booking = withRetry(() => bookResource());
+
+        if (booking.conflict) {
           return res.status(409).json({
             error: "This resource is already booked for that time range.",
             allowWaitlist: true,
           });
         }
 
-        const result = db
-          .prepare(
-            `INSERT INTO reservations
-          (restaurant_id, resource_id, customer_id, people_count,
-           date, time, start_time, end_time, seating_preference)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            restaurant_id,
-            resource_id,
-            req.user.id,
-            people_count,
-            date,
-            resolvedStart,
-            resolvedStart,
-            resolvedEnd,
-            seating_preference,
-          );
+        const result = booking.result;
 
         if (addon_ids?.length) {
           const insertAddon = db.prepare(
@@ -2231,7 +2344,10 @@ async function startServer() {
             `SELECT COUNT(*) as count FROM reservations WHERE restaurant_id = ? AND date = ? AND status IN ('pending', 'confirmed') AND time < ? AND end_time > ?`,
           )
           .get(restaurant_id, date, resolvedEnd, resolvedStart) as any;
-        if (overlapping.count >= 10)
+        if (
+          overlapping.count >=
+          (restaurant.max_concurrent_bookings_no_tables || 10)
+        )
           return res.status(409).json({
             error: "No tables available for this time slot.",
             allowWaitlist: true,
@@ -2284,7 +2400,7 @@ async function startServer() {
     app.post(
       "/api/reservations/:id/cancel",
       authenticate,
-      async (req: any, res) => {
+      asyncHandler(async (req: any, res: any) => {
         const reservation: any = db
           .prepare(
             "SELECT * FROM reservations WHERE id = ? AND customer_id = ?",
@@ -2334,46 +2450,62 @@ async function startServer() {
           `❌ Your reservation at ${info?.restaurant_name || "the restaurant"} for ${reservation.date} at ${visitTime} has been cancelled.`,
         );
         res.json({ success: true, reliabilityPenalty });
-      },
+      }),
     );
 
     app.post("/api/reservations/:id/confirm", authenticate, (req: any, res) => {
       if (req.user.role !== "owner" && req.user.role !== "admin")
         return res.status(403).json({ error: "Not authorized" });
+      const info = db
+        .prepare(
+          `SELECT r.*, u.email, res.name as restaurant_name, res.owner_id
+       FROM reservations r
+       JOIN users u ON r.customer_id = u.id
+       JOIN restaurants res ON r.restaurant_id = res.id
+       WHERE r.id = ?`,
+        )
+        .get(req.params.id) as any;
+      if (!info)
+        return res.status(404).json({ error: "Reservation not found" });
+      if (req.user.role !== "admin" && info.owner_id !== req.user.id)
+        return res.status(403).json({ error: "Not authorized" });
+
       db.prepare(
         "UPDATE reservations SET status = 'confirmed' WHERE id = ?",
       ).run(req.params.id);
-      const info = db
-        .prepare(
-          `SELECT r.*, u.email, res.name as restaurant_name FROM reservations r JOIN users u ON r.customer_id = u.id JOIN restaurants res ON r.restaurant_id = res.id WHERE r.id = ?`,
-        )
-        .get(req.params.id) as any;
-      if (info)
-        sendEmail(
-          info.email,
-          "Reservation Confirmed! ✅",
-          `<h1>Great news!</h1><p>Your reservation at <b>${info.restaurant_name}</b> for ${info.date} at ${info.start_time || info.time} has been confirmed.</p>`,
-        ).catch(console.error);
+      sendEmail(
+        info.email,
+        "Reservation Confirmed! ✅",
+        `<h1>Great news!</h1><p>Your reservation at <b>${info.restaurant_name}</b> for ${info.date} at ${info.start_time || info.time} has been confirmed.</p>`,
+      ).catch(console.error);
       res.json({ status: "confirmed" });
     });
 
     app.post("/api/reservations/:id/reject", authenticate, (req: any, res) => {
       if (req.user.role !== "owner" && req.user.role !== "admin")
         return res.status(403).json({ error: "Not authorized" });
+      const info = db
+        .prepare(
+          `SELECT r.*, u.email, res.name as restaurant_name, res.owner_id
+       FROM reservations r
+       JOIN users u ON r.customer_id = u.id
+       JOIN restaurants res ON r.restaurant_id = res.id
+       WHERE r.id = ?`,
+        )
+        .get(req.params.id) as any;
+      if (!info)
+        return res.status(404).json({ error: "Reservation not found" });
+      if (req.user.role !== "admin" && info.owner_id !== req.user.id)
+        return res.status(403).json({ error: "Not authorized" });
+
       db.prepare(
         "UPDATE reservations SET status = 'rejected' WHERE id = ?",
       ).run(req.params.id);
-      const info = db
-        .prepare(
-          `SELECT r.*, u.email, res.name as restaurant_name FROM reservations r JOIN users u ON r.customer_id = u.id JOIN restaurants res ON r.restaurant_id = res.id WHERE r.id = ?`,
-        )
-        .get(req.params.id) as any;
-      if (info)
-        sendEmail(
-          info.email,
-          "Reservation Update",
-          `<h1>Update on your reservation</h1><p>Unfortunately, your reservation at <b>${info.restaurant_name}</b> for ${info.date} at ${info.start_time || info.time} could not be accepted at this time.</p>`,
-        ).catch(console.error);
+      sendEmail(
+        info.email,
+        "Reservation Update",
+        `<h1>Update on your reservation</h1><p>Unfortunately, your reservation at <b>${info.restaurant_name}</b> for ${info.date} at ${info.start_time || info.time} could not be accepted at this time.</p>`,
+      ).catch(console.error);
       res.json({ status: "rejected" });
     });
 
@@ -2385,11 +2517,16 @@ async function startServer() {
           return res.status(403).json({ error: "Not authorized" });
         const reservation: any = db
           .prepare(
-            "SELECT customer_id, restaurant_id FROM reservations WHERE id = ?",
+            `SELECT r.customer_id, r.restaurant_id, res.owner_id
+       FROM reservations r JOIN restaurants res ON r.restaurant_id = res.id
+       WHERE r.id = ?`,
           )
           .get(req.params.id);
         if (!reservation)
           return res.status(404).json({ error: "Reservation not found" });
+        if (req.user.role !== "admin" && reservation.owner_id !== req.user.id)
+          return res.status(403).json({ error: "Not authorized" });
+
         db.prepare(
           "UPDATE reservations SET status = 'completed' WHERE id = ?",
         ).run(req.params.id);
@@ -2419,10 +2556,17 @@ async function startServer() {
       if (req.user.role !== "owner" && req.user.role !== "admin")
         return res.status(403).json({ error: "Not authorized" });
       const reservation: any = db
-        .prepare("SELECT customer_id FROM reservations WHERE id = ?")
+        .prepare(
+          `SELECT r.customer_id, res.owner_id
+       FROM reservations r JOIN restaurants res ON r.restaurant_id = res.id
+       WHERE r.id = ?`,
+        )
         .get(req.params.id);
       if (!reservation)
         return res.status(404).json({ error: "Reservation not found" });
+      if (req.user.role !== "admin" && reservation.owner_id !== req.user.id)
+        return res.status(403).json({ error: "Not authorized" });
+
       db.prepare("UPDATE reservations SET status = 'no-show' WHERE id = ?").run(
         req.params.id,
       );
@@ -2604,7 +2748,7 @@ async function startServer() {
     });
 
     // ── Bug Reports ───────────────────────────────────────────────────────────
-    app.post("/api/admin/bug-reports", authenticate, (req: any, res) => {
+    app.post("/api/bug-reports", authenticate, (req: any, res) => {
       const { category, details, restaurant_id } = req.body;
       if (!category)
         return res.status(400).json({ error: "Category is required" });
@@ -2728,6 +2872,13 @@ async function startServer() {
   }
 
   const PORT = 3000;
+
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error("[Reserva] Unhandled route error:", err);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ error: "Internal server error" });
+  });
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[Reserva] SERVER LISTENING ON PORT ${PORT}`);
     seedDatabase();
@@ -2739,13 +2890,16 @@ function calculateEndTime(
   time: string,
   peopleCount: number,
   customDuration?: number,
+  restaurant?: any,
 ): string {
   const [h, m] = time.split(":").map(Number);
   let duration: number;
   if (customDuration && customDuration > 0) duration = customDuration;
-  else if (peopleCount >= 5) duration = 120;
-  else if (peopleCount >= 3) duration = 90;
-  else duration = 75;
+  else if (peopleCount >= 5)
+    duration = restaurant?.default_duration_large_party || 120;
+  else if (peopleCount >= 3)
+    duration = restaurant?.default_duration_medium_party || 90;
+  else duration = restaurant?.default_duration_small_party || 75;
   const totalMinutes = h * 60 + m + duration;
   const endH = Math.floor(totalMinutes / 60) % 24;
   const endM = totalMinutes % 60;
@@ -2758,15 +2912,32 @@ function startNotificationCron() {
     try {
       const due = db
         .prepare(
-          `SELECT * FROM notifications WHERE sent = 0 AND cancelled = 0 AND send_at <= datetime('now')`,
+          `SELECT n.*, u.push_token, u.email FROM notifications n
+           JOIN users u ON n.user_id = u.id
+           WHERE n.sent = 0 AND n.cancelled = 0 AND n.send_at <= datetime('now')`,
         )
         .all() as any[];
       for (const notif of due) {
         db.prepare("UPDATE notifications SET sent = 1 WHERE id = ?").run(
           notif.id,
         );
+
+        if (notif.push_token) {
+          await sendPushNotification(
+            notif.push_token,
+            "Reserva",
+            notif.message,
+          );
+        } else if (notif.email) {
+          sendEmail(
+            notif.email,
+            "Reserva Notification",
+            `<p>${notif.message}</p>`,
+          ).catch(console.error);
+        }
+
         console.log(
-          `[Reserva Notif] Sending to user ${notif.user_id}: ${notif.message}`,
+          `[Reserva Notif] Delivered to user ${notif.user_id}: ${notif.message}`,
         );
       }
     } catch (err) {
@@ -2882,7 +3053,8 @@ startServer().catch((err) => {
 });
 
 process.on("uncaughtException", (err) => {
-  console.error("[Reserva] Uncaught Exception:", err);
+  console.error("[Reserva] Uncaught Exception — shutting down:", err);
+  process.exit(1);
 });
 process.on("unhandledRejection", (reason, promise) => {
   console.error(
