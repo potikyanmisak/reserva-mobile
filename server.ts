@@ -79,7 +79,7 @@ const sendEmail = async (to: string, subject: string, html: string) => {
   }
   try {
     await client.emails.send({
-      from: "Reserva <onboarding@resend.dev>",
+      from: "Reserva <noreply@reservaapp.app>",
       to,
       subject,
       html,
