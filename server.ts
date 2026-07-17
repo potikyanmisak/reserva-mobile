@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import fs from "fs";
 import { Resend } from "resend";
+import { buildVerificationEmail } from "./emailTemplates";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -487,14 +488,25 @@ async function startServer() {
     `);
 
     db.exec(`
-      CREATE TABLE IF NOT EXISTS bug_reports (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        category TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
+  CREATE TABLE IF NOT EXISTS bug_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    category TEXT,
+    details TEXT,
+    restaurant_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(restaurant_id) REFERENCES restaurants(id)
       );
     `);
+
+    const bugTableInfo = db.prepare("PRAGMA table_info(bug_reports)").all();
+    if (!bugTableInfo.some((c: any) => c.name === "details")) {
+      db.exec("ALTER TABLE bug_reports ADD COLUMN details TEXT");
+    }
+    if (!bugTableInfo.some((c: any) => c.name === "restaurant_id")) {
+      db.exec("ALTER TABLE bug_reports ADD COLUMN restaurant_id INTEGER");
+    }
 
     const tableTableInfo = db.prepare("PRAGMA table_info(tables)").all();
     if (!tableTableInfo.some((col: any) => col.name === "shape")) {
@@ -651,12 +663,7 @@ async function startServer() {
           await sendEmail(
             email,
             "Verify your Reserva account",
-            `<div style="font-family: sans-serif; max-width: 400px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-          <h2 style="color: #0070f3; text-align: center;">RESERVA</h2>
-          <p>Hi ${name || "there"},</p><p>Your verification code is:</p>
-          <div style="background: #f4f4f4; padding: 20px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 5px; border-radius: 8px;">${code}</div>
-          <p style="color: #666; font-size: 12px; margin-top: 20px;">This code expires in 10 minutes.</p>
-        </div>`,
+            buildVerificationEmail(name || "there", code),
           );
 
           return res.json({ email, userId: existingUser.id });
@@ -678,12 +685,7 @@ async function startServer() {
         await sendEmail(
           email,
           "Verify your Reserva account",
-          `<div style="font-family: sans-serif; max-width: 400px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-        <h2 style="color: #0070f3; text-align: center;">RESERVA</h2>
-        <p>Hi ${name || "there"},</p><p>Your verification code is:</p>
-        <div style="background: #f4f4f4; padding: 20px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 5px; border-radius: 8px;">${code}</div>
-        <p style="color: #666; font-size: 12px; margin-top: 20px;">This code expires in 10 minutes.</p>
-      </div>`,
+          buildVerificationEmail(name || "there", code),
         );
         res.json({ email, userId: result.lastInsertRowid });
       } catch (err) {
@@ -739,12 +741,8 @@ async function startServer() {
       ).run(code, expiresAt, user.id);
       await sendEmail(
         email,
-        "New Verification Code - Reserva",
-        `<div style="font-family: sans-serif; max-width: 400px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-          <h2 style="color: #0070f3; text-align: center;">RESERVA</h2>
-          <p>Your new verification code is:</p>
-          <div style="background: #f4f4f4; padding: 20px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 5px; border-radius: 8px;">${code}</div>
-        </div>`,
+        "Verify your Reserva account",
+        buildVerificationEmail(user.name || "there", code),
       );
       res.json({ success: true });
     });
@@ -798,13 +796,8 @@ async function startServer() {
       ).run(code, expiresAt, user.id);
       await sendEmail(
         email,
-        "Your Login Code - Reserva",
-        `<div style="font-family: sans-serif; max-width: 400px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-          <h2 style="color: #0070f3; text-align: center;">RESERVA</h2>
-          <p>Hi ${user.name},</p><p>Your login/reset code is:</p>
-          <div style="background: #f4f4f4; padding: 20px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 5px; border-radius: 8px;">${code}</div>
-          <p style="color: #666; font-size: 12px; margin-top: 20px;">This code expires in 10 minutes.</p>
-        </div>`,
+        "Verify your Reserva account",
+        buildVerificationEmail(user.name || "there", code),
       );
       res.json({ success: true });
     });
@@ -2612,13 +2605,39 @@ async function startServer() {
 
     // ── Bug Reports ───────────────────────────────────────────────────────────
     app.post("/api/admin/bug-reports", authenticate, (req: any, res) => {
-      const { category } = req.body;
+      const { category, details, restaurant_id } = req.body;
       if (!category)
         return res.status(400).json({ error: "Category is required" });
       try {
         db.prepare(
-          "INSERT INTO bug_reports (user_id, category) VALUES (?, ?)",
-        ).run(req.user.id, category);
+          "INSERT INTO bug_reports (user_id, category, details, restaurant_id) VALUES (?, ?, ?, ?)",
+        ).run(req.user.id, category, details || null, restaurant_id || null);
+
+        const admin: any = db
+          .prepare("SELECT email FROM users WHERE role = 'admin' LIMIT 1")
+          .get();
+        const reporter: any = db
+          .prepare("SELECT name, surname, email, phone FROM users WHERE id = ?")
+          .get(req.user.id);
+        const restaurant: any = restaurant_id
+          ? db
+              .prepare("SELECT name FROM restaurants WHERE id = ?")
+              .get(restaurant_id)
+          : null;
+
+        if (admin) {
+          sendEmail(
+            admin.email,
+            `🐛 New bug report: ${category}`,
+            `<div style="font-family: sans-serif;">
+          <h2>${category}</h2>
+          <p><b>From:</b> ${reporter?.name || ""} ${reporter?.surname || ""} — ${reporter?.email || "unknown"}${reporter?.phone ? ` — ${reporter.phone}` : ""}</p>
+          ${restaurant ? `<p><b>Restaurant:</b> ${restaurant.name}</p>` : ""}
+          ${details ? `<p><b>Details:</b><br>${details}</p>` : ""}
+        </div>`,
+          ).catch(console.error);
+        }
+
         res.json({ success: true });
       } catch (err) {
         console.error("[Reserva] Bug report error:", err);
@@ -2632,11 +2651,12 @@ async function startServer() {
       try {
         const reports = db
           .prepare(
-            `SELECT br.*, u.name, u.email
-             FROM bug_reports br
-             LEFT JOIN users u ON br.user_id = u.id
-             ORDER BY br.created_at DESC
-             LIMIT 100`,
+            `SELECT br.*, u.name, u.surname, u.email, u.phone, r.name as restaurant_name
+         FROM bug_reports br
+         LEFT JOIN users u ON br.user_id = u.id
+         LEFT JOIN restaurants r ON br.restaurant_id = r.id
+         ORDER BY br.created_at DESC
+         LIMIT 100`,
           )
           .all();
         res.json(reports);

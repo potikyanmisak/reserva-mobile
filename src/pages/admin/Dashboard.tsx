@@ -34,11 +34,12 @@ import {
   Plus,
   Crown,
   Sparkles,
+  Bug,
 } from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApiUrl } from "../../lib/api";
 
-type Tab = "users" | "requests" | "payments" | "featured";
+type Tab = "users" | "requests" | "payments" | "featured" | "bugs";
 
 const MAX_FEATURED = 10;
 
@@ -84,6 +85,7 @@ export default function AdminDashboard() {
     [],
   );
   const [featuredRestaurants, setFeaturedRestaurants] = useState<any[]>([]);
+  const [bugReports, setBugReports] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>("requests");
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -148,24 +150,44 @@ export default function AdminDashboard() {
 
   // ── Fetch featured restaurants ─────────────────────────────────────────────
 
-const fetchFeaturedRestaurants = async () => {
-  const token = await AsyncStorage.getItem("reserva_token");
-  const url = getApiUrl("/api/admin/featured");
-  console.log("FULL URL:", url); // ← add this
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  console.log("STATUS:", res.status);
-  const text = await res.text();
-  console.log("BODY:", text);
-  // ...
-};
+  const fetchFeaturedRestaurants = async () => {
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl("/api/admin/featured"), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch featured restaurants");
+      const data = await res.json();
+      setFeaturedRestaurants(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Admin Fetch Featured Restaurants Error:", err);
+      setFeaturedRestaurants([]);
+    }
+  };
+
+  // ── Fetch bug reports ───────────────────────────────────────────────────────
+
+  const fetchBugReports = async () => {
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl("/api/admin/bug-reports"), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch bug reports");
+      const data = await res.json();
+      setBugReports(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Admin Fetch Bug Reports Error:", err);
+      setBugReports([]);
+    }
+  };
 
   useEffect(() => {
     fetchUsers();
     fetchPendingRestaurants();
     fetchFeaturedRestaurants();
     fetchAllApprovedRestaurants();
+    fetchBugReports();
   }, []);
 
   // ── Handle approval / decline ──────────────────────────────────────────────
@@ -311,6 +333,15 @@ const fetchFeaturedRestaurants = async () => {
       r.location?.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
+  const filteredBugReports = bugReports.filter(
+    (b) =>
+      b.category?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      b.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      b.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      b.restaurant_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      b.details?.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
+
   // Restaurants not already featured, filtered by add modal search
   const availableToFeature = allApprovedRestaurants.filter(
     (r) =>
@@ -354,6 +385,18 @@ const fetchFeaturedRestaurants = async () => {
             }
             label="Approvals"
             badge={pendingRestaurants.length}
+          />
+          <AdminTabButton
+            active={activeTab === "bugs"}
+            onClick={() => setActiveTab("bugs")}
+            icon={
+              <Bug
+                size={18}
+                color={activeTab === "bugs" ? "white" : "#9CA3AF"}
+              />
+            }
+            label="Bug Reports"
+            badge={bugReports.length}
           />
           <AdminTabButton
             active={activeTab === "featured"}
@@ -429,9 +472,11 @@ const fetchFeaturedRestaurants = async () => {
             <Text style={styles.tabTitle}>
               {activeTab === "requests"
                 ? `Pending Approvals${pendingRestaurants.length > 0 ? ` (${pendingRestaurants.length})` : ""}`
-                : activeTab === "users"
-                  ? "Users"
-                  : "Payments"}
+                : activeTab === "bugs"
+                  ? `Bug Reports${bugReports.length > 0 ? ` (${bugReports.length})` : ""}`
+                  : activeTab === "users"
+                    ? "Users"
+                    : "Payments"}
             </Text>
           )}
 
@@ -479,6 +524,63 @@ const fetchFeaturedRestaurants = async () => {
                   handleRestaurantAction(item.id, "decline", item.name)
                 }
               />
+            )}
+          />
+        ) : activeTab === "bugs" ? (
+          // ── Bug reports ─────────────────────────────────────────────────────
+          <FlatList
+            data={filteredBugReports}
+            keyExtractor={(item) => String(item.id)}
+            contentContainerStyle={styles.listContent}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <View style={styles.emptyIcon}>
+                  <Bug size={32} color="#9CA3AF" />
+                </View>
+                <Text style={styles.emptyTitle}>No Bug Reports</Text>
+                <Text style={styles.emptySubtitle}>
+                  Reports submitted by users will appear here.
+                </Text>
+              </View>
+            }
+            renderItem={({ item }) => (
+              <View style={styles.userCard}>
+                <Text style={styles.userName}>{item.category}</Text>
+                <Text style={styles.userEmail}>
+                  {item.name
+                    ? `${item.name} ${item.surname || ""}`
+                    : "Unknown user"}
+                  {item.email ? ` · ${item.email}` : ""}
+                  {item.phone ? ` · ${item.phone}` : ""}
+                </Text>
+                {item.restaurant_name && (
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "700",
+                      color: "#d97706",
+                      marginTop: 6,
+                    }}
+                  >
+                    Restaurant: {item.restaurant_name}
+                  </Text>
+                )}
+                {item.details && (
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      color: "#4B5563",
+                      marginTop: 6,
+                      lineHeight: 19,
+                    }}
+                  >
+                    {item.details}
+                  </Text>
+                )}
+                <Text style={{ fontSize: 10, color: "#9CA3AF", marginTop: 8 }}>
+                  {new Date(item.created_at).toLocaleString()}
+                </Text>
+              </View>
             )}
           />
         ) : activeTab === "featured" ? (

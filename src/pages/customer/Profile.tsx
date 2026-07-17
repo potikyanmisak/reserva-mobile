@@ -696,6 +696,7 @@ export default function Profile() {
           onClose={() => setShowSupportModal(false)}
           token={token}
           userId={user?.id}
+          reservations={reservations}
         />
       )}
 
@@ -918,17 +919,37 @@ function SupportModal({
   onClose,
   token,
   userId,
+  reservations
 }: {
   onClose: () => void;
   token: string | null;
   userId?: number;
+  reservations: any[];
 }) {
   const { t } = useLanguage();
-  const [step, setStep] = React.useState<"main" | "bugOptions" | "sent">(
-    "main",
-  );
+  const [step, setStep] = React.useState<"main" | "bugOptions" | "bugDetails" | "sent">("main",);
+  const [category, setCategory] = React.useState("");
+  const [details, setDetails] = React.useState("");
+  const [selectedRestaurant, setSelectedRestaurant] = React.useState<any>(null);
 
-  const sendBugReport = async (category: string) => {
+  // restaurants the user has actually interacted with, for the picker
+  const knownRestaurants = React.useMemo(() => {
+    const seen = new Set<number>();
+    return reservations.filter((r) => {
+      if (seen.has(r.restaurant_id)) return false;
+      seen.add(r.restaurant_id);
+      return true;
+    });
+  }, [reservations]);
+
+  const openDetails = (cat: string) => {
+    setCategory(cat);
+    setSelectedRestaurant(null);
+    setDetails("");
+    setStep("bugDetails");
+  };
+
+  const submit = async () => {
     try {
       await fetch(`${getApiUrl("/api")}/admin/bug-reports`, {
         method: "POST",
@@ -936,14 +957,23 @@ function SupportModal({
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ category, user_id: userId }),
+        body: JSON.stringify({
+          category,
+          details: details.trim() || null,
+          restaurant_id: selectedRestaurant?.restaurant_id || null,
+        }),
       });
-    } catch (e) {
-      // Silently handle — report still shows success to user
-    }
+    } catch (e) {}
     setStep("sent");
     setTimeout(onClose, 2000);
   };
+
+  const isRestaurantCategory = category === "Restaurant info incorrect";
+  const canSubmit = isRestaurantCategory
+    ? !!selectedRestaurant && details.trim().length > 0
+    : details.trim().length > 0;
+
+
 
   const handleGeneralFeedback = () => {
     // Opens Play Store / App Store
@@ -999,21 +1029,109 @@ function SupportModal({
               icon={<Smartphone size={20} color="#C5B9A0" />}
               label={t("profile.bug_crashing")}
               description={t("profile.bug_crashing_desc")}
-              onPress={() => sendBugReport("App is crashing")}
+              onPress={() => openDetails("App is crashing")}
             />
             <BugOptionButton
               icon={<MapPin size={20} color="#C5B9A0" />}
               label={t("profile.bug_location")}
               description={t("profile.bug_location_desc")}
-              onPress={() => sendBugReport("Location not working")}
+              onPress={() => openDetails("Location not working")}
             />
             <BugOptionButton
               icon={<Store size={20} color="#C5B9A0" />}
               label={t("profile.bug_restaurant_info")}
               description={t("profile.bug_restaurant_info_desc")}
-              onPress={() => sendBugReport("Restaurant info incorrect")}
+              onPress={() => openDetails("Restaurant info incorrect")}
             />
           </View>
+        </View>
+      </View>
+    );
+  }
+
+  if (step === "bugDetails") {
+    return (
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          <TouchableOpacity
+            onPress={() => setStep("bugOptions")}
+            style={styles.closeBtn}
+          >
+            <ChevronRight
+              size={20}
+              color="#666"
+              style={{ transform: [{ rotate: "180deg" }] }}
+            />
+          </TouchableOpacity>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>{category}</Text>
+            <Text style={styles.modalTagLine}>
+              {isRestaurantCategory
+                ? "Which restaurant, and what's wrong?"
+                : "Tell us what happened"}
+            </Text>
+          </View>
+
+          {isRestaurantCategory && (
+            <ScrollView
+              style={{ maxHeight: 220 }}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={{ gap: 10 }}>
+                {knownRestaurants.map((r) => (
+                  <TouchableOpacity
+                    key={r.restaurant_id}
+                    style={[
+                      styles.restaurantPickRow,
+                      selectedRestaurant?.restaurant_id === r.restaurant_id &&
+                        styles.restaurantPickRowActive,
+                    ]}
+                    onPress={() => setSelectedRestaurant(r)}
+                  >
+                    <View style={styles.restaurantPickLogo}>
+                      {r.logo_url ? (
+                        <Image
+                          source={{ uri: r.logo_url }}
+                          style={styles.restaurantPickLogoImg}
+                        />
+                      ) : (
+                        <Store size={18} color="#9CA3AF" />
+                      )}
+                    </View>
+                    <Text style={styles.restaurantPickName}>
+                      {r.restaurant_name}
+                    </Text>
+                    {selectedRestaurant?.restaurant_id === r.restaurant_id && (
+                      <CheckCircle2 size={18} color="#7C8B6D" />
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+          )}
+
+          <TextInput
+            value={details}
+            onChangeText={setDetails}
+            placeholder={
+              isRestaurantCategory
+                ? "e.g. 'Wrong phone number' or 'Opening hours are wrong'"
+                : "Describe the issue in a few words"
+            }
+            multiline
+            style={styles.modalInput}
+          />
+
+          <TouchableOpacity
+            onPress={submit}
+            disabled={!canSubmit}
+            style={[styles.submitBtn, !canSubmit && styles.disabledBtn]}
+          >
+            <Text style={styles.submitBtnText}>
+              {t("restaurant_detail.submit")}
+            </Text>
+            <Send size={18} color="white" />
+          </TouchableOpacity>
         </View>
       </View>
     );
