@@ -7,14 +7,14 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "assetBundlePatterns": ["**/*"],
-    "icon": "./assets/fonts/images/icon.png",
+    "icon": "./assets/images/icon.png",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.reserva.app"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/fonts/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#FDF3E8"
       },
       "package": "com.reserva.app",
