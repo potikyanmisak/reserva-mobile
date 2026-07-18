@@ -6,26 +6,21 @@
     "entryPoint": "./index.js",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
+    "icon": "./assets/images/icon.png",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.reserva.app"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#1A1A1A"
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#FDF3E8"
       },
       "package": "com.reserva.app",
-      "permissions": [
-        "android.permission.RECORD_AUDIO"
-      ]
+      "permissions": ["android.permission.RECORD_AUDIO"]
     },
-    "plugins": [
-      "expo-image-picker",
-      "@react-native-community/datetimepicker"
-    ],
+    "plugins": ["expo-image-picker", "@react-native-community/datetimepicker"],
     "extra": {
       "eas": {
         "projectId": "ca1ac8d5-b463-4a88-95f7-74fe676070c4"

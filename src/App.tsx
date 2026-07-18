@@ -1,10 +1,10 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
-import { View, ActivityIndicator, Platform } from "react-native";
+import { View, Platform } from "react-native";
 import {
   Home,
   Bookmark,
@@ -17,6 +17,7 @@ import {
 import { theme } from "./theme";
 import { AuthProvider, useAuth } from "./lib/AuthContext";
 import { LanguageProvider } from "./lib/LanguageContext";
+import SplashScreen from "./components/Splashscreen";
 
 import CustomerDashboard from "./pages/customer/Dashboard";
 import Collections from "./pages/customer/Collections";
@@ -226,22 +227,20 @@ function OwnerTabs() {
   );
 }
 
-function AppNavigator() {
-  const { user, loading } = useAuth();
+function AppNavigator({ fontsLoaded }: { fontsLoaded: boolean }) {
+  const { user, loading: authLoading } = useAuth();
 
-  if (loading) {
-    return (
-      <View
-        style={{
-          flex: 1,
-          alignItems: "center",
-          justifyContent: "center",
-          backgroundColor: theme.colors.bgBase,
-        }}
-      >
-        <ActivityIndicator size="large" color={theme.colors.charcoal} />
-      </View>
-    );
+  // Two real init steps: fonts + auth check. Extend the denominator
+  // if you add another awaited step (e.g. an initial data fetch).
+  const progress = useMemo(() => {
+    let completed = 0;
+    if (fontsLoaded) completed += 1;
+    if (!authLoading) completed += 1;
+    return completed / 2;
+  }, [fontsLoaded, authLoading]);
+
+  if (!fontsLoaded || authLoading) {
+    return <SplashScreen progress={progress} />;
   }
 
   const isOwner = user?.role === "owner";
@@ -285,7 +284,9 @@ export default function App() {
     "Inria Serif Italic": require("../assets/fonts/InriaSerif-Italic.ttf"),
   });
 
-  if (!fontsLoaded) return null;
+  // Note: providers now always mount, even before fonts finish loading,
+  // so AppNavigator (inside AuthProvider) can show the splash with a
+  // progress bar instead of returning null / a bare spinner.
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
@@ -293,7 +294,7 @@ export default function App() {
           <LanguageProvider>
             <SettingsProvider>
               <AuthProvider>
-                <AppNavigator />
+                <AppNavigator fontsLoaded={fontsLoaded} />
               </AuthProvider>
             </SettingsProvider>
           </LanguageProvider>
