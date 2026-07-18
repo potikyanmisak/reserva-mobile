@@ -951,7 +951,7 @@ function SupportModal({
 
   const submit = async () => {
     try {
-      await fetch(`${getApiUrl("/api")}/admin/bug-reports`, {
+      await fetch(`${getApiUrl("/api")}/bug-reports`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
