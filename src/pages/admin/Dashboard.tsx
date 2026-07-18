@@ -388,7 +388,10 @@ export default function AdminDashboard() {
           />
           <AdminTabButton
             active={activeTab === "bugs"}
-            onClick={() => setActiveTab("bugs")}
+            onClick={() => {
+              setActiveTab("bugs");
+              fetchBugReports();
+            }}
             icon={
               <Bug
                 size={18}
