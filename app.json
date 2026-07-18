@@ -7,7 +7,7 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "assetBundlePatterns": ["**/*"],
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/fonts/images/icon.png",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.reserva.app"
