@@ -37,6 +37,7 @@ const EMPTY_LOGIN = { email: "", password: "" };
 const EMPTY_SIGNUP = {
   email: "",
   password: "",
+  confirmPassword: "",
   name: "",
   surname: "",
   phone: "",
@@ -50,10 +51,17 @@ export default function AuthPage() {
   // Separate state per form — Sign In and Sign Up no longer share fields.
   const [loginData, setLoginData] = useState(EMPTY_LOGIN);
   const [signupData, setSignupData] = useState(EMPTY_SIGNUP);
-  // Multi-step signup: details (name/surname) -> phone -> credentials (email/password)
-  const [signupStage, setSignupStage] = useState<
-    "details" | "phone" | "credentials"
-  >("details");
+  // Multi-step signup: details (name/surname/phone/email) -> [verify code] -> password
+  const [signupStage, setSignupStage] = useState<"details" | "password">(
+    "details",
+  );
+
+    const [forgotEmail, setForgotEmail] = useState("");
+    const [tempResetAuth, setTempResetAuth] = useState<any>(null);
+    const [resetPasswordData, setResetPasswordData] = useState({
+      password: "",
+      confirmPassword: "",
+    });
 
   const [step, setStep] = useState(1);
   const [verificationCode, setVerificationCode] = useState("");
@@ -66,7 +74,12 @@ export default function AuthPage() {
   const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
 
   // Whichever form is currently active — used for verification screen, etc.
-  const activeEmail = isLogin ? loginData.email : signupData.email;
+ const activeEmail =
+   step === 4 || step === 5 || step === 6
+     ? forgotEmail
+     : isLogin
+       ? loginData.email
+       : signupData.email;
 
   const hasMinLength = signupData.password.length >= 8;
   const hasNumber = /\d/.test(signupData.password);
@@ -100,31 +113,22 @@ export default function AuthPage() {
       : getApiUrl("/api/register");
     const body = isLogin
       ? { email: loginData.email, password: loginData.password }
-      : { ...signupData, role };
+      : { ...signupData, role, verified: true };
 
     try {
-      if (
-        !isLogin &&
-        role === "customer" &&
-        (!signupData.name.trim() || !signupData.surname.trim())
-      ) {
-        setError("Name and Surname are required.");
-        setLoading(false);
-        return;
-      }
-
-      if (!isLogin && role === "customer" && !signupData.phone.trim()) {
-        setError("Phone number is required.");
-        setLoading(false);
-        return;
-      }
-
-      if (!isLogin && !isPasswordValid) {
-        setError(
-          "Password must be at least 8 characters and contain a number.",
-        );
-        setLoading(false);
-        return;
+      if (!isLogin) {
+        if (!isPasswordValid) {
+          setError(
+            "Password must be at least 8 characters and contain a number.",
+          );
+          setLoading(false);
+          return;
+        }
+        if (signupData.password !== signupData.confirmPassword) {
+          setError("Passwords do not match.");
+          setLoading(false);
+          return;
+        }
       }
 
       const res = await fetch(endpoint, {
@@ -136,6 +140,8 @@ export default function AuthPage() {
       const data = await res.json();
       if (!res.ok) {
         if (data.unverified) {
+          // Safety net — shouldn't normally trigger since we verify
+          // the email before ever reaching this password stage.
           setStep(2);
           setTimer(0);
           setLoading(false);
@@ -144,11 +150,14 @@ export default function AuthPage() {
         throw new Error(data.error);
       }
 
-      if (!isLogin && step === 1) {
-        setStep(2);
-        setTimer(60);
+      if (isLogin) {
+        login(data.token, data.user);
+      } else if (role === "customer") {
+        setTempAuth(data);
+        setStep(3);
         setLoading(false);
       } else {
+        // Owner: no photo step, go straight in.
         login(data.token, data.user);
       }
     } catch (err: any) {
@@ -157,26 +166,44 @@ export default function AuthPage() {
     }
   };
 
-  const handleDetailsNext = () => {
+  const handleDetailsNext = async () => {
     setError("");
-    if (
-      role === "customer" &&
-      (!signupData.name.trim() || !signupData.surname.trim())
-    ) {
-      setError("Name and Surname are required.");
-      return;
-    }
-    setSignupStage(role === "customer" ? "phone" : "credentials");
-  };
 
-  const handlePhoneNext = () => {
-    setError("");
-    const digitsOnly = signupData.phone.replace(/\D/g, "");
-    if (!signupData.phone.trim() || digitsOnly.length < 6) {
-      setError("Please enter a valid phone number.");
+    if (role === "customer") {
+      if (!signupData.name.trim() || !signupData.surname.trim()) {
+        setError("Name and Surname are required.");
+        return;
+      }
+      const digitsOnly = signupData.phone.replace(/\D/g, "");
+      if (!signupData.phone.trim() || digitsOnly.length < 6) {
+        setError("Please enter a valid phone number.");
+        return;
+      }
+    }
+
+    if (!signupData.email.trim()) {
+      setError("Email is required.");
       return;
     }
-    setSignupStage("credentials");
+
+    setLoading(true);
+    try {
+      // Send the verification code up front, before password is collected.
+      const res = await fetch(getApiUrl("/api/auth/send-code"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: signupData.email }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      setStep(2);
+      setTimer(60);
+      setLoading(false);
+    } catch (err: any) {
+      setError(err.message || "Could not send verification code.");
+      setLoading(false);
+    }
   };
 
   const handleVerify = async () => {
@@ -187,8 +214,14 @@ export default function AuthPage() {
     setLoading(true);
     setError("");
 
+    const isResetFlow = step === 5;
+
     try {
-      const res = await fetch(getApiUrl("/api/verify"), {
+      const endpoint = isResetFlow
+        ? getApiUrl("/api/auth/verify-reset-code")
+        : getApiUrl("/api/verify");
+
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: activeEmail, code: verificationCode }),
@@ -197,13 +230,52 @@ export default function AuthPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      if (!isLogin && role !== "owner") {
-        setTempAuth(data);
-        setStep(3);
+      if (isResetFlow) {
+        setTempResetAuth(data);
+        setResetPasswordData({ password: "", confirmPassword: "" });
+        setStep(6);
+        setVerificationCode("");
         setLoading(false);
-      } else {
-        login(data.token, data.user);
+      } else if (!isLogin) {
+        setSignupStage("password");
+        setStep(1);
+        setVerificationCode("");
+        setLoading(false);
       }
+    } catch (err: any) {
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    setError("");
+    const hasLen = resetPasswordData.password.length >= 8;
+    const hasNum = /\d/.test(resetPasswordData.password);
+    if (!hasLen || !hasNum) {
+      setError("Password must be at least 8 characters and contain a number.");
+      return;
+    }
+    if (resetPasswordData.password !== resetPasswordData.confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    if (!tempResetAuth) return;
+
+    setLoading(true);
+    try {
+      const res = await fetch(getApiUrl("/api/user/reset-password"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tempResetAuth.token}`,
+        },
+        body: JSON.stringify({ password: resetPasswordData.password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      login(tempResetAuth.token, tempResetAuth.user);
     } catch (err: any) {
       setError(err.message);
       setLoading(false);
@@ -218,7 +290,7 @@ export default function AuthPage() {
       const endpoint =
         step === 5
           ? getApiUrl("/api/auth/forgot-password")
-          : getApiUrl("/api/resend-code");
+          : getApiUrl("/api/auth/send-code");
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -237,14 +309,17 @@ export default function AuthPage() {
   };
 
   const handleForgotPassword = async () => {
-    setLoading(true);
     setError("");
-
+    if (!forgotEmail.trim()) {
+      setError("Please enter your email.");
+      return;
+    }
+    setLoading(true);
     try {
       const res = await fetch(getApiUrl("/api/auth/forgot-password"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: loginData.email }),
+        body: JSON.stringify({ email: forgotEmail }),
       });
 
       const data = await res.json();
@@ -341,6 +416,159 @@ export default function AuthPage() {
     );
   }
 
+  if (step === 4) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.authCard}>
+          <View style={styles.iconCircle}>
+            <Mail color={theme.colors.charcoal} size={32} />
+          </View>
+          <Text style={styles.title}>Reset Password</Text>
+          <Text style={styles.subtitle}>
+            Enter the email associated with your account and we'll send you a
+            code.
+          </Text>
+
+          <View style={{ width: "100%", gap: 24 }}>
+            <Input
+              icon={<Mail size={18} color={theme.colors.textDim} />}
+              placeholder="Email"
+              keyboardType="email-address"
+              value={forgotEmail}
+              onChangeText={setForgotEmail}
+            />
+
+            {error ? <Text style={styles.errorTextCenter}>{error}</Text> : null}
+
+            <Pressable
+              onPress={handleForgotPassword}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                pressed && { transform: [{ scale: 0.95 }] },
+              ]}
+            >
+              {loading ? (
+                <ActivityIndicator color={theme.colors.white} />
+              ) : (
+                <Text style={styles.primaryButtonText}>Send Code</Text>
+              )}
+            </Pressable>
+          </View>
+
+          <View style={styles.footer}>
+            <Pressable
+              onPress={() => {
+                setStep(1);
+                setError("");
+              }}
+            >
+              <Text style={styles.backText}>Back to Sign In</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  if (step === 6) {
+    const hasLen = resetPasswordData.password.length >= 8;
+    const hasNum = /\d/.test(resetPasswordData.password);
+    return (
+      <View style={styles.container}>
+        <View style={styles.authCard}>
+          <View style={styles.iconCircle}>
+            <Lock color={theme.colors.charcoal} size={32} />
+          </View>
+          <Text style={styles.title}>New Password</Text>
+          <Text style={styles.subtitle}>
+            Choose a new password for your account.
+          </Text>
+
+          <View style={{ width: "100%", gap: 16 }}>
+            <Input
+              icon={<Lock size={18} color={theme.colors.textDim} />}
+              placeholder="New Password"
+              secureTextEntry
+              value={resetPasswordData.password}
+              onChangeText={(val) =>
+                setResetPasswordData({ ...resetPasswordData, password: val })
+              }
+            />
+            <Input
+              icon={<Lock size={18} color={theme.colors.textDim} />}
+              placeholder="Confirm New Password"
+              secureTextEntry
+              value={resetPasswordData.confirmPassword}
+              onChangeText={(val) =>
+                setResetPasswordData({
+                  ...resetPasswordData,
+                  confirmPassword: val,
+                })
+              }
+            />
+
+            {resetPasswordData.password.length > 0 && (
+              <View style={styles.passwordHints}>
+                <View style={styles.hintRow}>
+                  <View
+                    style={[
+                      styles.hintDot,
+                      hasLen
+                        ? { backgroundColor: "#16a34a" }
+                        : { backgroundColor: theme.colors.red },
+                    ]}
+                  />
+                  <Text
+                    style={[
+                      styles.hintText,
+                      { color: hasLen ? "#16a34a" : theme.colors.red },
+                    ]}
+                  >
+                    At least 8 characters
+                  </Text>
+                </View>
+                <View style={styles.hintRow}>
+                  <View
+                    style={[
+                      styles.hintDot,
+                      hasNum
+                        ? { backgroundColor: "#16a34a" }
+                        : { backgroundColor: theme.colors.red },
+                    ]}
+                  />
+                  <Text
+                    style={[
+                      styles.hintText,
+                      { color: hasNum ? "#16a34a" : theme.colors.red },
+                    ]}
+                  >
+                    Contains numbers
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {error ? <Text style={styles.errorTextCenter}>{error}</Text> : null}
+
+            <Pressable
+              onPress={handleResetPassword}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                pressed && { transform: [{ scale: 0.95 }] },
+              ]}
+            >
+              {loading ? (
+                <ActivityIndicator color={theme.colors.white} />
+              ) : (
+                <Text style={styles.primaryButtonText}>Save Password</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   if (step === 2 || step === 5) {
     const isReset = step === 5;
     return (
@@ -378,7 +606,7 @@ export default function AuthPage() {
             {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
             <Pressable
-              onPress={isReset ? handleVerify : handleVerify}
+              onPress={handleVerify}
               style={({ pressed }) => [
                 styles.primaryButton,
                 pressed && { transform: [{ scale: 0.95 }] },
@@ -388,8 +616,8 @@ export default function AuthPage() {
                 {loading
                   ? "Verifying..."
                   : isReset
-                    ? "Sign In Now"
-                    : "Verify & Join"}
+                    ? "Verify Code"
+                    : "Verify & Continue"}
               </Text>
             </Pressable>
           </View>
@@ -485,7 +713,11 @@ export default function AuthPage() {
               />
 
               <Pressable
-                onPress={() => setStep(4)}
+                onPress={() => {
+                  setForgotEmail(loginData.email);
+                  setError("");
+                  setStep(4);
+                }}
                 style={styles.forgotPassword}
               >
                 <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
@@ -566,32 +798,72 @@ export default function AuthPage() {
                   </View>
 
                   {role === "customer" && (
-                    <View style={styles.row}>
-                      <View style={{ flex: 1 }}>
-                        <Input
-                          icon={
-                            <UserIcon size={18} color={theme.colors.textDim} />
-                          }
-                          placeholder="Name"
-                          value={signupData.name}
-                          onChangeText={(val) =>
-                            setSignupData({ ...signupData, name: val })
-                          }
-                        />
+                    <>
+                      <View style={styles.row}>
+                        <View style={{ flex: 1 }}>
+                          <Input
+                            icon={
+                              <UserIcon
+                                size={18}
+                                color={theme.colors.textDim}
+                              />
+                            }
+                            placeholder="Name"
+                            value={signupData.name}
+                            onChangeText={(val) =>
+                              setSignupData({ ...signupData, name: val })
+                            }
+                          />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Input
+                            icon={
+                              <UserIcon
+                                size={18}
+                                color={theme.colors.textDim}
+                              />
+                            }
+                            placeholder="Surname"
+                            value={signupData.surname}
+                            onChangeText={(val) =>
+                              setSignupData({ ...signupData, surname: val })
+                            }
+                          />
+                        </View>
                       </View>
-                      <View style={{ flex: 1 }}>
-                        <Input
-                          icon={
-                            <UserIcon size={18} color={theme.colors.textDim} />
-                          }
-                          placeholder="Surname"
-                          value={signupData.surname}
-                          onChangeText={(val) =>
-                            setSignupData({ ...signupData, surname: val })
-                          }
-                        />
-                      </View>
-                    </View>
+
+                      <Input
+                        icon={<Phone size={18} color={theme.colors.textDim} />}
+                        placeholder="Phone Number"
+                        keyboardType="phone-pad"
+                        value={signupData.phone}
+                        onChangeText={(val) =>
+                          setSignupData({ ...signupData, phone: val })
+                        }
+                      />
+
+                      <Input
+                        icon={<Mail size={18} color={theme.colors.textDim} />}
+                        placeholder="Email"
+                        keyboardType="email-address"
+                        value={signupData.email}
+                        onChangeText={(val) =>
+                          setSignupData({ ...signupData, email: val })
+                        }
+                      />
+                    </>
+                  )}
+
+                  {role === "owner" && (
+                    <Input
+                      icon={<Mail size={18} color={theme.colors.textDim} />}
+                      placeholder="Email"
+                      keyboardType="email-address"
+                      value={signupData.email}
+                      onChangeText={(val) =>
+                        setSignupData({ ...signupData, email: val })
+                      }
+                    />
                   )}
 
                   {error ? (
@@ -605,59 +877,17 @@ export default function AuthPage() {
                       pressed && { transform: [{ scale: 0.95 }] },
                     ]}
                   >
-                    <Text style={styles.primaryButtonText}>Next</Text>
+                    {loading ? (
+                      <ActivityIndicator color={theme.colors.white} />
+                    ) : (
+                      <Text style={styles.primaryButtonText}>Next</Text>
+                    )}
                   </Pressable>
                 </>
               )}
 
-              {signupStage === "phone" && (
+              {signupStage === "password" && (
                 <>
-                  <Input
-                    icon={<Phone size={18} color={theme.colors.textDim} />}
-                    placeholder="Phone Number"
-                    keyboardType="phone-pad"
-                    value={signupData.phone}
-                    onChangeText={(val) =>
-                      setSignupData({ ...signupData, phone: val })
-                    }
-                  />
-
-                  {error ? (
-                    <Text style={styles.errorTextCenter}>{error}</Text>
-                  ) : null}
-
-                  <Pressable
-                    onPress={handlePhoneNext}
-                    style={({ pressed }) => [
-                      styles.primaryButton,
-                      pressed && { transform: [{ scale: 0.95 }] },
-                    ]}
-                  >
-                    <Text style={styles.primaryButtonText}>Next</Text>
-                  </Pressable>
-
-                  <Pressable
-                    onPress={() => {
-                      setSignupStage("details");
-                      setError("");
-                    }}
-                  >
-                    <Text style={styles.backText}>Back</Text>
-                  </Pressable>
-                </>
-              )}
-
-              {signupStage === "credentials" && (
-                <>
-                  <Input
-                    icon={<Mail size={18} color={theme.colors.textDim} />}
-                    placeholder="Email"
-                    keyboardType="email-address"
-                    value={signupData.email}
-                    onChangeText={(val) =>
-                      setSignupData({ ...signupData, email: val })
-                    }
-                  />
                   <Input
                     icon={<Lock size={18} color={theme.colors.textDim} />}
                     placeholder="Password"
@@ -668,6 +898,16 @@ export default function AuthPage() {
                       if (!passwordTouched && val.length > 0)
                         setPasswordTouched(true);
                     }}
+                  />
+
+                  <Input
+                    icon={<Lock size={18} color={theme.colors.textDim} />}
+                    placeholder="Confirm Password"
+                    secureTextEntry
+                    value={signupData.confirmPassword}
+                    onChangeText={(val) =>
+                      setSignupData({ ...signupData, confirmPassword: val })
+                    }
                   />
 
                   {passwordTouched && (
@@ -740,7 +980,7 @@ export default function AuthPage() {
 
                   <Pressable
                     onPress={() => {
-                      setSignupStage(role === "customer" ? "phone" : "details");
+                      setSignupStage("details");
                       setError("");
                     }}
                   >

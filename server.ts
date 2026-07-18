@@ -176,6 +176,14 @@ async function startServer() {
     if (!userTableInfo.some((col: any) => col.name === "phone")) {
       db.exec("ALTER TABLE users ADD COLUMN phone TEXT");
     }
+        db.exec(`
+      CREATE TABLE IF NOT EXISTS pending_verifications (
+        email TEXT PRIMARY KEY,
+        code TEXT,
+        expires_at DATETIME,
+        verified_at DATETIME
+      );
+    `);
 
     db.exec(`
       CREATE TABLE IF NOT EXISTS restaurants (
@@ -644,6 +652,42 @@ async function startServer() {
       res.json({ success: true });
     });
 
+    app.post(
+      "/api/auth/send-code",
+      asyncHandler(async (req: any, res: any) => {
+        const { email } = req.body;
+        if (!email)
+          return res.status(400).json({ error: "Email is required." });
+
+        const existingUser: any = db
+          .prepare("SELECT is_verified FROM users WHERE email = ?")
+          .get(email);
+        if (existingUser && existingUser.is_verified) {
+          return res.status(400).json({
+            error: "Account already exists. Please sign in instead.",
+            code: "USER_EXISTS",
+          });
+        }
+
+        const code = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
+
+        db.prepare(
+          `INSERT INTO pending_verifications (email, code, expires_at, verified_at)
+           VALUES (?, ?, ?, NULL)
+           ON CONFLICT(email) DO UPDATE SET code = excluded.code, expires_at = excluded.expires_at, verified_at = NULL`,
+        ).run(email, code, expiresAt);
+
+        await sendEmail(
+          email,
+          "Verify your Reserva account",
+          buildVerificationEmail("there", code),
+        );
+
+        res.json({ success: true });
+      }),
+    );
+
     app.post("/api/register", async (req, res) => {
       const { email, password, name, surname, role, phone } = req.body;
       if (!email || !password || (role !== "owner" && (!name || !surname))) {
@@ -654,43 +698,31 @@ async function startServer() {
               : "Email, Password, Name and Surname are required.",
         });
       }
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const expiresAt = new Date(Date.now() + 10 * 60000).toISOString();
+
       try {
+        const pending: any = db
+          .prepare("SELECT * FROM pending_verifications WHERE email = ?")
+          .get(email);
+        if (!pending || !pending.verified_at) {
+          return res
+            .status(400)
+            .json({ error: "Please verify your email before registering." });
+        }
+
         const existingUser: any = db
           .prepare("SELECT * FROM users WHERE email = ?")
           .get(email);
-
         if (existingUser) {
-          if (existingUser.is_verified) {
-            return res.status(400).json({
-              error: "Account already exists. Please sign in instead.",
-              code: "USER_EXISTS",
-            });
-          }
-          db.prepare(
-            "UPDATE users SET password = ?, name = ?, surname = ?, phone = ? , role = ?, verification_code = ?, code_expires_at = ? WHERE id = ?",
-          ).run(
-            hashedPassword,
-            name ?? null,
-            surname ?? null,
-            phone ?? null,
-            role || "customer",
-            code,
-            expiresAt,
-            existingUser.id,
-          );
-          await sendEmail(
-            email,
-            "Verify your Reserva account",
-            buildVerificationEmail(name || "there", code),
-          );
-          return res.json({ email, userId: existingUser.id });
+          return res.status(400).json({
+            error: "Account already exists. Please sign in instead.",
+            code: "USER_EXISTS",
+          });
         }
 
+        const hashedPassword = await bcrypt.hash(password, 10);
+
         const stmt = db.prepare(
-          "INSERT INTO users (email, password, name, surname, phone , role, verification_code, code_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO users (email, password, name, surname, phone, role, is_verified) VALUES (?, ?, ?, ?, ?, ?, 1)",
         );
         const result = stmt.run(
           email,
@@ -699,15 +731,29 @@ async function startServer() {
           surname ?? null,
           phone ?? null,
           role || "customer",
-          code,
-          expiresAt,
         );
-        await sendEmail(
+
+        db.prepare("DELETE FROM pending_verifications WHERE email = ?").run(
           email,
-          "Verify your Reserva account",
-          buildVerificationEmail(name || "there", code),
         );
-        res.json({ email, userId: result.lastInsertRowid });
+
+        const token = jwt.sign(
+          { id: result.lastInsertRowid, email, role: role || "customer" },
+          JWT_SECRET,
+          { expiresIn: JWT_EXPIRES_IN },
+        );
+
+        res.json({
+          token,
+          user: {
+            id: result.lastInsertRowid,
+            email,
+            name: name ?? null,
+            surname: surname ?? null,
+            role: role || "customer",
+            photo_url: null,
+          },
+        });
       } catch (err) {
         console.error(err);
         res
@@ -756,34 +802,21 @@ async function startServer() {
       "/api/verify",
       asyncHandler(async (req: any, res: any) => {
         const { email, code } = req.body;
-        const user: any = db
+        const pending: any = db
           .prepare(
-            "SELECT * FROM users WHERE email = ? AND verification_code = ?",
+            "SELECT * FROM pending_verifications WHERE email = ? AND code = ?",
           )
           .get(email, code);
-        if (!user)
+        if (!pending)
           return res.status(400).json({ error: "Invalid verification code" });
-        if (new Date(user.code_expires_at) < new Date())
+        if (new Date(pending.expires_at) < new Date())
           return res.status(400).json({ error: "Code has expired" });
+
         db.prepare(
-          "UPDATE users SET is_verified = 1, verification_code = NULL, code_expires_at = NULL WHERE id = ?",
-        ).run(user.id);
-        const token = jwt.sign(
-          { id: user.id, email: user.email, role: user.role },
-          JWT_SECRET,
-          { expiresIn: JWT_EXPIRES_IN },
-        );
-        res.json({
-          token,
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            surname: user.surname,
-            role: user.role,
-            photo_url: user.photo_url,
-          },
-        });
+          "UPDATE pending_verifications SET verified_at = ? WHERE email = ?",
+        ).run(new Date().toISOString(), email);
+
+        res.json({ success: true, email });
       }),
     );
 
@@ -866,6 +899,26 @@ async function startServer() {
             photo_url: user.photo_url,
           },
         });
+      }),
+    );
+
+    app.post(
+      "/api/user/reset-password",
+      authenticate,
+      asyncHandler(async (req: any, res: any) => {
+        const { password } = req.body;
+        if (!password || password.length < 8 || !/\d/.test(password)) {
+          return res.status(400).json({
+            error:
+              "Password must be at least 8 characters and contain a number.",
+          });
+        }
+        const hashedPassword = await bcrypt.hash(password, 10);
+        db.prepare("UPDATE users SET password = ? WHERE id = ?").run(
+          hashedPassword,
+          req.user.id,
+        );
+        res.json({ success: true });
       }),
     );
 
