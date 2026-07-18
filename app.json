@@ -3,7 +3,6 @@
     "name": "Reserva",
     "slug": "reserva-premium",
     "version": "1.0.0",
-    "entryPoint": "./index.js",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "assetBundlePatterns": ["**/*"],

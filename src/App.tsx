@@ -281,7 +281,7 @@ function AppNavigator({ fontsLoaded }: { fontsLoaded: boolean }) {
 
 export default function App() {
   const [fontsLoaded] = useFonts({
-    "Inria Serif Italic": require("../assets/fonts/InriaSerif-Italic.ttf"),
+    "Inria Serif Italic": require("../assets/InriaSerif-Italic.ttf"),
   });
 
   // Note: providers now always mount, even before fonts finish loading,
