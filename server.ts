@@ -176,7 +176,7 @@ async function startServer() {
     if (!userTableInfo.some((col: any) => col.name === "phone")) {
       db.exec("ALTER TABLE users ADD COLUMN phone TEXT");
     }
-        db.exec(`
+    db.exec(`
       CREATE TABLE IF NOT EXISTS pending_verifications (
         email TEXT PRIMARY KEY,
         code TEXT,
@@ -389,13 +389,10 @@ async function startServer() {
     addRestaurantCol("secondary_phone", "TEXT");
     addRestaurantCol("created_at", "DATETIME DEFAULT '1970-01-01 00:00:00'");
     addRestaurantCol("duration_mode", "TEXT DEFAULT 'manual'"); // 'manual' | 'auto'
-     addRestaurantCol("default_duration_small_party", "INTEGER DEFAULT 75");
-     addRestaurantCol("default_duration_medium_party", "INTEGER DEFAULT 90");
-     addRestaurantCol("default_duration_large_party", "INTEGER DEFAULT 120");
-     addRestaurantCol(
-       "max_concurrent_bookings_no_tables",
-       "INTEGER DEFAULT 10",
-     );
+    addRestaurantCol("default_duration_small_party", "INTEGER DEFAULT 75");
+    addRestaurantCol("default_duration_medium_party", "INTEGER DEFAULT 90");
+    addRestaurantCol("default_duration_large_party", "INTEGER DEFAULT 120");
+    addRestaurantCol("max_concurrent_bookings_no_tables", "INTEGER DEFAULT 10");
 
     const notifTableInfo = db.prepare("PRAGMA table_info(notifications)").all();
     if (!notifTableInfo.some((col: any) => col.name === "read")) {

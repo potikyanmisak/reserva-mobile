@@ -35,13 +35,13 @@ import {
   Sofa,
   Pencil,
   Save,
+  Wallet,
 } from "lucide-react-native";
 import { useLanguage } from "../../lib/LanguageContext";
 import * as ImagePicker from "expo-image-picker";
 import { WebView } from "react-native-webview";
 import { getApiUrl } from "../../lib/api";
 import { EXPERIENCE_GROUPS, AMENITIES, MOODS } from "../../lib/filterOptions";
-import OwnerApplication from "./Application";
 
 const { width } = Dimensions.get("window");
 
@@ -234,9 +234,6 @@ export default function OwnerDashboard() {
   ];
 
   const [restaurant, setRestaurant] = useState<any>(null);
-  const [applicationStatus, setApplicationStatus] = useState<
-    null | "pending" | false
-  >(null);
   const [resources, setResources] = useState<any[]>([]);
   const [pendingReservations, setPendingReservations] = useState<any[]>([]);
   const [showResourceForm, setShowResourceForm] = useState(false);
@@ -277,6 +274,11 @@ export default function OwnerDashboard() {
   const [filterMoods, setFilterMoods] = useState<string[]>([]);
   const [savingFilters, setSavingFilters] = useState(false);
 
+  const [editingPriceRange, setEditingPriceRange] = useState(false);
+  const [minPrice, setMinPrice] = useState<number | null>(null);
+  const [maxPrice, setMaxPrice] = useState<number | null>(null);
+  const [savingPriceRange, setSavingPriceRange] = useState(false);
+
   useEffect(() => {
     if (restaurant) {
       setPrimaryPhone(restaurant.phone_number || "");
@@ -292,6 +294,16 @@ export default function OwnerDashboard() {
       setFilterExperienceTypes(restaurant.experience_types || []);
       setFilterAmenities(restaurant.amenities || []);
       setFilterMoods(restaurant.moods || []);
+      setMinPrice(
+        restaurant.min_price !== undefined && restaurant.min_price !== null
+          ? Number(restaurant.min_price)
+          : null,
+      );
+      setMaxPrice(
+        restaurant.max_price !== undefined && restaurant.max_price !== null
+          ? Number(restaurant.max_price)
+          : null,
+      );
     }
   }, [restaurant]);
 
@@ -450,6 +462,62 @@ export default function OwnerDashboard() {
     setFilterAmenities(restaurant?.amenities || []);
     setFilterMoods(restaurant?.moods || []);
     setEditingFilters(false);
+  };
+
+  const handleSavePriceRange = async () => {
+    if (!restaurant?.id) {
+      showToast(t("owner_dashboard.restaurant_not_loaded"), "error");
+      return;
+    }
+    if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
+      showToast(t("owner_dashboard.invalid_price_range"), "error");
+      return;
+    }
+    setSavingPriceRange(true);
+    try {
+      const res = await fetch(getApiUrl(`/api/restaurants/${restaurant.id}`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          min_price: minPrice ?? 0,
+          max_price: maxPrice ?? 0,
+        }),
+      });
+      if (res.ok) {
+        showToast(t("owner_dashboard.price_range_updated"));
+        setEditingPriceRange(false);
+        fetchRestaurant();
+      } else {
+        const errText = await res.text();
+        showToast(
+          `${t("owner_dashboard.price_range_update_failed")} (${res.status})`,
+          "error",
+        );
+        console.error("Price range save error:", res.status, errText);
+      }
+    } catch (e) {
+      showToast(t("owner_dashboard.network_error"), "error");
+      console.error(e);
+    } finally {
+      setSavingPriceRange(false);
+    }
+  };
+
+  const handleCancelPriceRange = () => {
+    setMinPrice(
+      restaurant?.min_price !== undefined && restaurant?.min_price !== null
+        ? Number(restaurant.min_price)
+        : null,
+    );
+    setMaxPrice(
+      restaurant?.max_price !== undefined && restaurant?.max_price !== null
+        ? Number(restaurant.max_price)
+        : null,
+    );
+    setEditingPriceRange(false);
   };
 
   const pickImage = async (type: "logo" | "gallery") => {
@@ -638,24 +706,12 @@ export default function OwnerDashboard() {
             .then((res) => res.json())
             .then((fullData) => {
               setRestaurant(fullData);
-              setApplicationStatus(false);
               fetchResources(owned.id);
               fetchPendingReservations();
             });
-        } else {
-          fetch(getApiUrl("/api/owner/application-status"), {
-            headers: { Authorization: `Bearer ${token}` },
-          })
-            .then((res) => (res.ok ? res.json() : null))
-            .then((appData) => {
-              if (appData && appData.status === "pending")
-                setApplicationStatus("pending");
-              else setApplicationStatus(false);
-            })
-            .catch(() => setApplicationStatus(false));
         }
       })
-      .catch(() => setApplicationStatus(false));
+      .catch(() => {});
   };
 
   const fetchResources = (restaurantId: number) => {
@@ -810,10 +866,9 @@ export default function OwnerDashboard() {
 
   if (!restaurant) {
     return (
-      <OwnerApplication
-        applicationStatus={applicationStatus}
-        onSubmitted={() => setApplicationStatus("pending")}
-      />
+      <View style={styles.centeredContainer}>
+        <ActivityIndicator size="large" color="#7C8B6D" />
+      </View>
     );
   }
 
@@ -1170,6 +1225,109 @@ export default function OwnerDashboard() {
                         style={styles.cardSaveBtn}
                       >
                         {savingPhone ? (
+                          <ActivityIndicator size="small" color="white" />
+                        ) : (
+                          <>
+                            <Save size={14} color="white" />
+                            <Text style={styles.cardSaveText}>
+                              {t("owner_dashboard.save")}
+                            </Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+              </View>
+            </View>
+
+            {/* Average Price Range Card */}
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>
+                  {t("owner_dashboard.avg_price_range")}
+                </Text>
+                {!editingPriceRange && (
+                  <TouchableOpacity
+                    onPress={() => setEditingPriceRange(true)}
+                    style={styles.editIconBtn}
+                  >
+                    <Pencil size={14} color="white" />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              <View style={styles.cardPanel}>
+                {!editingPriceRange ? (
+                  <View style={styles.phoneDisplayRow}>
+                    <View style={styles.phoneLabelCol}>
+                      <Text style={styles.phoneTypeLabel}>
+                        {t("owner_dashboard.cost_per_person")}
+                      </Text>
+                      <View style={styles.phoneValueRow}>
+                        <Wallet size={14} color="#7C8B6D" />
+                        <Text style={styles.phoneValue}>
+                          {minPrice || maxPrice
+                            ? `${minPrice ?? "—"} - ${maxPrice ?? "—"} ֏`
+                            : "—"}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                ) : (
+                  <>
+                    <View style={styles.formDataRow}>
+                      <View style={styles.formInputWrapper}>
+                        <Text style={styles.tinyLabel}>
+                          {t("owner_dashboard.min_price")}
+                        </Text>
+                        <TextInput
+                          style={styles.formMiniInput}
+                          keyboardType="numeric"
+                          placeholder={t(
+                            "owner_dashboard.price_placeholder_min",
+                          )}
+                          placeholderTextColor="rgba(45,45,45,0.3)"
+                          value={minPrice !== null ? String(minPrice) : ""}
+                          onChangeText={(text) =>
+                            setMinPrice(text ? parseInt(text) : null)
+                          }
+                        />
+                      </View>
+                      <View style={styles.formInputWrapper}>
+                        <Text style={styles.tinyLabel}>
+                          {t("owner_dashboard.max_price")}
+                        </Text>
+                        <TextInput
+                          style={styles.formMiniInput}
+                          keyboardType="numeric"
+                          placeholder={t(
+                            "owner_dashboard.price_placeholder_max",
+                          )}
+                          placeholderTextColor="rgba(45,45,45,0.3)"
+                          value={maxPrice !== null ? String(maxPrice) : ""}
+                          onChangeText={(text) =>
+                            setMaxPrice(text ? parseInt(text) : null)
+                          }
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.cardActionRow}>
+                      <TouchableOpacity
+                        onPress={handleCancelPriceRange}
+                        style={styles.cardCancelBtn}
+                      >
+                        <Text style={styles.cardCancelText}>
+                          {t("common.cancel")}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={handleSavePriceRange}
+                        disabled={savingPriceRange}
+                        style={styles.cardSaveBtn}
+                      >
+                        {savingPriceRange ? (
                           <ActivityIndicator size="small" color="white" />
                         ) : (
                           <>
@@ -1873,6 +2031,12 @@ export default function OwnerDashboard() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#FDFCFB" },
+  centeredContainer: {
+    flex: 1,
+    backgroundColor: "#FDFCFB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   scrollContent: {},
   row: { flexDirection: "row", gap: 12 },
   inputGroup: { gap: 8 },

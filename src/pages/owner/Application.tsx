@@ -9,7 +9,6 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  Switch,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
@@ -50,11 +49,9 @@ export default function OwnerApplication({
     cuisine_type: "Italian",
     location: "",
     phone_number: "",
-    outdoor_seating: false,
     open_time: "10:00",
     close_time: "22:00",
     logo_url: "",
-    deposit_amount: 0,
     cancellation_policy_hours: 24,
     min_price: 0,
     max_price: 0,
@@ -119,6 +116,43 @@ export default function OwnerApplication({
     }
   };
 
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      t("owner_dashboard.confirm_title"),
+      t("owner_dashboard.confirm_delete_account"),
+      [
+        { text: t("common.cancel"), style: "cancel" },
+        {
+          text: t("common.delete"),
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const res = await fetch(getApiUrl("/api/account"), {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (res.ok) {
+                logout();
+                navigation.navigate("Auth");
+              } else {
+                Alert.alert(
+                  t("owner_dashboard.error_title"),
+                  t("owner_dashboard.delete_account_failed"),
+                );
+              }
+            } catch (err) {
+              console.error(err);
+              Alert.alert(
+                t("owner_dashboard.error_title"),
+                t("owner_dashboard.network_error"),
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
   if (applicationStatus === null) {
     return (
       <View style={styles.centeredContainer}>
@@ -157,6 +191,14 @@ export default function OwnerApplication({
           <LogOut size={16} color="rgba(45,45,45,0.5)" />
           <Text style={styles.logoutPendingText}>
             {t("owner_dashboard.sign_out")}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={handleDeleteAccount}
+          style={styles.deleteAccountBtn}
+        >
+          <Text style={styles.deleteAccountText}>
+            {t("owner_dashboard.delete_account")}
           </Text>
         </TouchableOpacity>
       </View>
@@ -283,24 +325,6 @@ export default function OwnerApplication({
             </View>
           </View>
 
-          <View style={styles.toggleRow}>
-            <View>
-              <Text style={styles.toggleTitle}>
-                {t("owner_dashboard.outdoor_seating")}
-              </Text>
-              <Text style={styles.toggleSubtitle}>
-                {t("owner_dashboard.terrace_garden_available")}
-              </Text>
-            </View>
-            <Switch
-              value={formData.outdoor_seating}
-              onValueChange={(val) =>
-                setFormData({ ...formData, outdoor_seating: val })
-              }
-              trackColor={{ false: "rgba(0,0,0,0.1)", true: "#7C8B6D" }}
-            />
-          </View>
-
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>
               {t("owner_dashboard.location")}
@@ -345,40 +369,22 @@ export default function OwnerApplication({
             </View>
           </View>
 
-          <View style={styles.row}>
-            <View style={[styles.inputGroup, { flex: 1 }]}>
-              <Text style={styles.inputLabel}>
-                {t("owner_dashboard.deposit")} ($)
-              </Text>
-              <TextInput
-                style={styles.input}
-                keyboardType="numeric"
-                value={String(formData.deposit_amount || 0)}
-                onChangeText={(text) =>
-                  setFormData({
-                    ...formData,
-                    deposit_amount: parseFloat(text) || 0,
-                  })
-                }
-              />
-            </View>
-            <View style={[styles.inputGroup, { flex: 1 }]}>
-              <Text style={styles.inputLabel}>
-                {t("owner_dashboard.cancel_policy")} (
-                {t("owner_dashboard.hrs_suffix")})
-              </Text>
-              <TextInput
-                style={styles.input}
-                keyboardType="numeric"
-                value={String(formData.cancellation_policy_hours || 24)}
-                onChangeText={(text) =>
-                  setFormData({
-                    ...formData,
-                    cancellation_policy_hours: parseInt(text) || 0,
-                  })
-                }
-              />
-            </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>
+              {t("owner_dashboard.cancel_policy")} (
+              {t("owner_dashboard.hrs_suffix")})
+            </Text>
+            <TextInput
+              style={styles.input}
+              keyboardType="numeric"
+              value={String(formData.cancellation_policy_hours || 24)}
+              onChangeText={(text) =>
+                setFormData({
+                  ...formData,
+                  cancellation_policy_hours: parseInt(text) || 0,
+                })
+              }
+            />
           </View>
 
           <View style={styles.priceSection}>
@@ -480,6 +486,29 @@ export default function OwnerApplication({
           {t("owner_dashboard.start_application")}
         </Text>
       </TouchableOpacity>
+
+      <View style={styles.accountActionsRow}>
+        <TouchableOpacity
+          onPress={() => {
+            logout();
+            navigation.navigate("Auth");
+          }}
+          style={styles.logoutPendingBtn}
+        >
+          <LogOut size={16} color="rgba(45,45,45,0.5)" />
+          <Text style={styles.logoutPendingText}>
+            {t("owner_dashboard.sign_out")}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={handleDeleteAccount}
+          style={styles.deleteAccountBtn}
+        >
+          <Text style={styles.deleteAccountText}>
+            {t("owner_dashboard.delete_account")}
+          </Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -572,6 +601,15 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     color: "rgba(45,45,45,0.5)",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  accountActionsRow: { alignItems: "center", gap: 4 },
+  deleteAccountBtn: { paddingVertical: 8 },
+  deleteAccountText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#ef4444",
     textTransform: "uppercase",
     letterSpacing: 1,
   },
@@ -696,28 +734,6 @@ const styles = StyleSheet.create({
     color: "rgba(45, 45, 45, 0.6)",
   },
   textWhite: { color: "white" },
-  toggleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: 16,
-    backgroundColor: "white",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.05)",
-  },
-  toggleTitle: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#2D2D2D",
-    textTransform: "uppercase",
-  },
-  toggleSubtitle: {
-    fontSize: 9,
-    fontWeight: "500",
-    color: "rgba(45, 45, 45, 0.4)",
-    textTransform: "uppercase",
-  },
   row: { flexDirection: "row", gap: 12 },
   priceSection: {
     gap: 16,

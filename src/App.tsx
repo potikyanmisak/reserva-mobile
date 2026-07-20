@@ -25,6 +25,7 @@ import Profile from "./pages/customer/Profile";
 import RestaurantDetail from "./pages/RestaurantDetail";
 import ReservationPage from "./pages/ReservationPage";
 import OwnerDashboard from "./pages/owner/Dashboard";
+import OwnerGate from "./pages/owner/OwnerGate";
 import OwnerReservations from "./pages/owner/Reservations";
 import OwnerAnalytics from "./pages/owner/Analytics";
 import OwnerSettings from "./pages/owner/Settings";
@@ -261,7 +262,18 @@ function AppNavigator({ fontsLoaded }: { fontsLoaded: boolean }) {
               component={AdminDashboard as any}
             />
           ) : isOwner ? (
-            <Stack.Screen name="OwnerMain" component={OwnerTabs as any} />
+            <>
+              {/*
+                Owners always land on OwnerGate first. OwnerGate has no
+                tab bar of its own — it silently checks whether the owner
+                already has an approved restaurant. If so it replaces
+                itself with "OwnerMain" (the tabbed dashboard). If not,
+                it renders the application flow full-screen, with no nav
+                bar at all, exactly like a normal onboarding screen.
+              */}
+              <Stack.Screen name="OwnerGate" component={OwnerGate as any} />
+              <Stack.Screen name="OwnerMain" component={OwnerTabs as any} />
+            </>
           ) : (
             <Stack.Screen name="CustomerMain" component={CustomerTabs} />
           )}
