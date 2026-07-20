@@ -393,6 +393,20 @@ async function startServer() {
     addRestaurantCol("default_duration_medium_party", "INTEGER DEFAULT 90");
     addRestaurantCol("default_duration_large_party", "INTEGER DEFAULT 120");
     addRestaurantCol("max_concurrent_bookings_no_tables", "INTEGER DEFAULT 10");
+    addRestaurantCol("is_hidden", "INTEGER DEFAULT 0");
+
+    const reservationTableInfo2 = db
+      .prepare("PRAGMA table_info(reservations)")
+      .all();
+    const addReservationCol2 = (col: string, def: string) => {
+      if (!reservationTableInfo2.some((c: any) => c.name === col)) {
+        db.exec(`ALTER TABLE reservations ADD COLUMN ${col} ${def}`);
+      }
+    };
+    addReservationCol2("guest_name", "TEXT");
+    addReservationCol2("guest_phone", "TEXT");
+    addReservationCol2("notes", "TEXT");
+    addReservationCol2("added_by_admin", "INTEGER DEFAULT 0");
 
     const notifTableInfo = db.prepare("PRAGMA table_info(notifications)").all();
     if (!notifTableInfo.some((col: any) => col.name === "read")) {
@@ -1060,7 +1074,7 @@ async function startServer() {
            ORDER BY ri.id ASC
            LIMIT 1) as cover_image_url
         FROM restaurants r
-        WHERE r.status = 'approved'
+        WHERE r.status = 'approved' AND (r.is_hidden IS NULL OR r.is_hidden = 0)
       `;
       const params: any[] = [];
       if (cuisine) {
@@ -1165,34 +1179,46 @@ async function startServer() {
         return res.status(403).json({ error: "Not authorized" });
       const pending = db
         .prepare(
-          "SELECT * FROM restaurants WHERE status = 'pending' ORDER BY created_at ASC",
+          `SELECT r.*, u.name as owner_name, u.surname as owner_surname,
+            u.email as owner_email, u.phone as owner_phone
+           FROM restaurants r
+           JOIN users u ON r.owner_id = u.id
+           WHERE r.status = 'pending' ORDER BY r.created_at ASC`,
         )
         .all()
-        .map((r: any) => ({
-          ...r,
-          experience_types: (() => {
-            try {
-              return JSON.parse(r.experience_types || "[]");
-            } catch {
-              return [];
-            }
-          })(),
-          amenities: (() => {
-            try {
-              return JSON.parse(r.amenities || "[]");
-            } catch {
-              return [];
-            }
-          })(),
-          moods: (() => {
-            try {
-              return JSON.parse(r.moods || "[]");
-            } catch {
-              return [];
-            }
-          })(),
-          outdoor_seating: r.outdoor_seating === 1,
-        }));
+        .map((r: any) => {
+          const images = db
+            .prepare(
+              "SELECT id, url, image_type FROM restaurant_images WHERE restaurant_id = ?",
+            )
+            .all(r.id);
+          return {
+            ...r,
+            experience_types: (() => {
+              try {
+                return JSON.parse(r.experience_types || "[]");
+              } catch {
+                return [];
+              }
+            })(),
+            amenities: (() => {
+              try {
+                return JSON.parse(r.amenities || "[]");
+              } catch {
+                return [];
+              }
+            })(),
+            moods: (() => {
+              try {
+                return JSON.parse(r.moods || "[]");
+              } catch {
+                return [];
+              }
+            })(),
+            outdoor_seating: r.outdoor_seating === 1,
+            images,
+          };
+        });
       res.json(pending);
     });
 
@@ -1204,13 +1230,16 @@ async function startServer() {
           return res.status(403).json({ error: "Not authorized" });
         const approved = db
           .prepare(
-            `SELECT r.*,
+            `SELECT r.*, u.name as owner_name, u.surname as owner_surname,
+              u.email as owner_email, u.phone as owner_phone,
             (SELECT ri.url FROM restaurant_images ri
              WHERE ri.restaurant_id = r.id
                AND (ri.image_type = 'gallery' OR ri.image_type IS NULL)
              ORDER BY ri.id ASC
-             LIMIT 1) as cover_image_url
+             LIMIT 1) as cover_image_url,
+            (SELECT COUNT(*) FROM reservations res WHERE res.restaurant_id = r.id) as reservation_count
            FROM restaurants r
+           JOIN users u ON r.owner_id = u.id
            WHERE r.status = 'approved'
            ORDER BY r.name ASC`,
           )
@@ -1238,6 +1267,7 @@ async function startServer() {
                 return [];
               }
             })(),
+            is_hidden: r.is_hidden === 1,
           }));
         res.json(approved);
       },
@@ -1338,6 +1368,157 @@ async function startServer() {
         ).catch(console.error);
         res.json({ success: true });
       }),
+    );
+
+    app.post(
+      "/api/admin/restaurants/:id/hide",
+      authenticate,
+      (req: any, res) => {
+        if (req.user.role !== "admin")
+          return res.status(403).json({ error: "Not authorized" });
+        db.prepare("UPDATE restaurants SET is_hidden = 1 WHERE id = ?").run(
+          req.params.id,
+        );
+        res.json({ success: true });
+      },
+    );
+
+    app.post(
+      "/api/admin/restaurants/:id/unhide",
+      authenticate,
+      (req: any, res) => {
+        if (req.user.role !== "admin")
+          return res.status(403).json({ error: "Not authorized" });
+        db.prepare("UPDATE restaurants SET is_hidden = 0 WHERE id = ?").run(
+          req.params.id,
+        );
+        res.json({ success: true });
+      },
+    );
+
+    app.delete("/api/admin/restaurants/:id", authenticate, (req: any, res) => {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Not authorized" });
+      const id = req.params.id;
+      try {
+        db.prepare("DELETE FROM restaurant_images WHERE restaurant_id = ?").run(
+          id,
+        );
+        db.prepare(
+          "DELETE FROM restaurant_schedules WHERE restaurant_id = ?",
+        ).run(id);
+        db.prepare(
+          "DELETE FROM reservation_addons WHERE reservation_id IN (SELECT id FROM reservations WHERE restaurant_id = ?)",
+        ).run(id);
+        db.prepare(
+          "DELETE FROM notifications WHERE reservation_id IN (SELECT id FROM reservations WHERE restaurant_id = ?)",
+        ).run(id);
+        db.prepare("DELETE FROM reservations WHERE restaurant_id = ?").run(id);
+        db.prepare("DELETE FROM waitlist WHERE restaurant_id = ?").run(id);
+        db.prepare(
+          "DELETE FROM review_likes WHERE review_id IN (SELECT id FROM reviews WHERE restaurant_id = ?)",
+        ).run(id);
+        db.prepare("DELETE FROM reviews WHERE restaurant_id = ?").run(id);
+        db.prepare("DELETE FROM addons WHERE restaurant_id = ?").run(id);
+        db.prepare("DELETE FROM resources WHERE restaurant_id = ?").run(id);
+        db.prepare("DELETE FROM tables WHERE restaurant_id = ?").run(id);
+        db.prepare("DELETE FROM collections WHERE restaurant_id = ?").run(id);
+        db.prepare("DELETE FROM restaurants WHERE id = ?").run(id);
+        res.json({ success: true });
+      } catch (err) {
+        console.error("[Reserva] Delete restaurant error:", err);
+        res.status(500).json({ error: "Failed to delete restaurant" });
+      }
+    });
+
+    // ── Admin: reservations for a specific restaurant ─────────────────────────
+    app.get(
+      "/api/admin/restaurants/:id/reservations",
+      authenticate,
+      (req: any, res) => {
+        if (req.user.role !== "admin")
+          return res.status(403).json({ error: "Not authorized" });
+        try {
+          const reservations = db
+            .prepare(
+              `SELECT rv.*,
+                u.name as customer_name, u.surname as customer_surname,
+                u.email as customer_email, u.phone as customer_phone
+              FROM reservations rv
+              LEFT JOIN users u ON rv.customer_id = u.id
+              WHERE rv.restaurant_id = ?
+              ORDER BY rv.date DESC, rv.time DESC`,
+            )
+            .all(req.params.id);
+          res.json(reservations);
+        } catch (err) {
+          console.error(
+            "[Reserva] Admin fetch restaurant reservations error:",
+            err,
+          );
+          res.status(500).json({ error: "Failed to fetch reservations" });
+        }
+      },
+    );
+
+    app.post(
+      "/api/admin/restaurants/:id/reservations",
+      authenticate,
+      (req: any, res) => {
+        if (req.user.role !== "admin")
+          return res.status(403).json({ error: "Not authorized" });
+        const restaurantId = req.params.id;
+        const {
+          customer_email,
+          guest_name,
+          guest_phone,
+          people_count,
+          date,
+          time,
+          notes,
+        } = req.body;
+        if (!date || !time || !people_count) {
+          return res
+            .status(400)
+            .json({ error: "Date, time, and people count are required" });
+        }
+        try {
+          const restaurant: any = db
+            .prepare("SELECT id FROM restaurants WHERE id = ?")
+            .get(restaurantId);
+          if (!restaurant)
+            return res.status(404).json({ error: "Restaurant not found" });
+
+          let customerId: number | null = null;
+          if (customer_email) {
+            const existing: any = db
+              .prepare("SELECT id FROM users WHERE email = ?")
+              .get(customer_email);
+            if (existing) customerId = existing.id;
+          }
+
+          const result = db
+            .prepare(
+              `INSERT INTO reservations
+                (restaurant_id, customer_id, people_count, date, time, status, guest_name, guest_phone, notes, added_by_admin)
+               VALUES (?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, 1)`,
+            )
+            .run(
+              restaurantId,
+              customerId,
+              people_count,
+              date,
+              time,
+              customerId ? null : guest_name || null,
+              customerId ? null : guest_phone || null,
+              notes || null,
+            );
+          res.json({ success: true, id: result.lastInsertRowid });
+        } catch (err) {
+          console.error("[Reserva] Admin add reservation error:", err);
+          res.status(500).json({ error: "Failed to add reservation" });
+        }
+      },
     );
 
     app.post("/api/restaurants/:id/logo", authenticate, (req: any, res) => {
@@ -1461,7 +1642,7 @@ async function startServer() {
              ORDER BY ri.id ASC
              LIMIT 1) as cover_image_url
           FROM restaurants r
-          WHERE r.status = 'approved'
+          WHERE r.status = 'approved' AND (r.is_hidden IS NULL OR r.is_hidden = 0)
         `,
         )
         .all() as any[];
@@ -1592,7 +1773,20 @@ async function startServer() {
         experience_types,
         amenities,
         moods,
+        name,
+        description,
+        cuisine_type,
+        open_time,
+        close_time,
+        deposit_amount,
+        min_price,
+        max_price,
+        logo_url,
       } = req.body;
+
+      // Only admins may edit these core identity/pricing fields — owners keep
+      // using their existing settings flow for these.
+      const isAdmin = req.user.role === "admin";
 
       try {
         db.prepare(
@@ -1604,7 +1798,16 @@ async function startServer() {
             lng = COALESCE(?, lng),
             experience_types = COALESCE(?, experience_types),
             amenities = COALESCE(?, amenities),
-            moods = COALESCE(?, moods)
+            moods = COALESCE(?, moods),
+            name = COALESCE(?, name),
+            description = COALESCE(?, description),
+            cuisine_type = COALESCE(?, cuisine_type),
+            open_time = COALESCE(?, open_time),
+            close_time = COALESCE(?, close_time),
+            deposit_amount = COALESCE(?, deposit_amount),
+            min_price = COALESCE(?, min_price),
+            max_price = COALESCE(?, max_price),
+            logo_url = COALESCE(?, logo_url)
           WHERE id = ?`,
         ).run(
           phone_number ?? null,
@@ -1615,6 +1818,15 @@ async function startServer() {
           experience_types ? JSON.stringify(experience_types) : null,
           amenities ? JSON.stringify(amenities) : null,
           moods ? JSON.stringify(moods) : null,
+          isAdmin ? (name ?? null) : null,
+          isAdmin ? (description ?? null) : null,
+          isAdmin ? (cuisine_type ?? null) : null,
+          isAdmin ? (open_time ?? null) : null,
+          isAdmin ? (close_time ?? null) : null,
+          isAdmin ? (deposit_amount ?? null) : null,
+          isAdmin ? (min_price ?? null) : null,
+          isAdmin ? (max_price ?? null) : null,
+          isAdmin ? (logo_url ?? null) : null,
           req.params.id,
         );
         res.json({ success: true });
@@ -2795,6 +3007,78 @@ async function startServer() {
         .prepare("SELECT id, email, name, surname, role FROM users")
         .all();
       res.json(users);
+    });
+
+    app.patch("/api/admin/users/:id", authenticate, (req: any, res) => {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Not authorized" });
+      const { name, surname, email, role } = req.body;
+      const targetId = req.params.id;
+      try {
+        if (email) {
+          const existing: any = db
+            .prepare("SELECT id FROM users WHERE email = ? AND id != ?")
+            .get(email, targetId);
+          if (existing)
+            return res
+              .status(400)
+              .json({ error: "Email is already in use by another account." });
+        }
+        db.prepare(
+          `UPDATE users SET
+            name = COALESCE(?, name),
+            surname = COALESCE(?, surname),
+            email = COALESCE(?, email),
+            role = COALESCE(?, role)
+          WHERE id = ?`,
+        ).run(
+          name ?? null,
+          surname ?? null,
+          email ?? null,
+          role ?? null,
+          targetId,
+        );
+        const updated = db
+          .prepare(
+            "SELECT id, email, name, surname, role FROM users WHERE id = ?",
+          )
+          .get(targetId);
+        if (!updated) return res.status(404).json({ error: "User not found" });
+        res.json({ success: true, user: updated });
+      } catch (err) {
+        console.error("[Reserva] Admin user update error:", err);
+        res.status(500).json({ error: "Failed to update user" });
+      }
+    });
+
+    app.delete("/api/admin/users/:id", authenticate, (req: any, res) => {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Not authorized" });
+      const targetId = req.params.id;
+      if (String(req.user.id) === String(targetId))
+        return res
+          .status(400)
+          .json({ error: "You cannot delete your own admin account." });
+      try {
+        const target: any = db
+          .prepare("SELECT id, role FROM users WHERE id = ?")
+          .get(targetId);
+        if (!target) return res.status(404).json({ error: "User not found" });
+        db.prepare("DELETE FROM notifications WHERE user_id = ?").run(targetId);
+        db.prepare("DELETE FROM reservations WHERE customer_id = ?").run(
+          targetId,
+        );
+        db.prepare("DELETE FROM reviews WHERE customer_id = ?").run(targetId);
+        db.prepare("DELETE FROM waitlist WHERE customer_id = ?").run(targetId);
+        db.prepare("DELETE FROM collections WHERE user_id = ?").run(targetId);
+        db.prepare("DELETE FROM review_likes WHERE user_id = ?").run(targetId);
+        db.prepare("DELETE FROM bug_reports WHERE user_id = ?").run(targetId);
+        db.prepare("DELETE FROM users WHERE id = ?").run(targetId);
+        res.json({ success: true });
+      } catch (err) {
+        console.error("[Reserva] Admin user delete error:", err);
+        res.status(500).json({ error: "Failed to delete user" });
+      }
     });
 
     // ── Bug Reports ───────────────────────────────────────────────────────────

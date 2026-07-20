@@ -9,7 +9,6 @@ import {
   ActivityIndicator,
   FlatList,
   TextInput,
-  Alert,
   Modal,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -35,13 +34,146 @@ import {
   Crown,
   Sparkles,
   Bug,
+  EyeOff,
+  Eye,
+  Calendar,
+  UserPlus,
+  AlertTriangle,
+  Info,
+  Mail,
 } from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApiUrl } from "../../lib/api";
 
-type Tab = "users" | "requests" | "payments" | "featured" | "bugs";
+type Tab =
+  "users" | "requests" | "payments" | "featured" | "bugs" | "restaurants";
 
 const MAX_FEATURED = 10;
+
+// ── Toast (replaces bare Alert.alert for lightweight feedback) ────────────────
+
+type ToastState = {
+  visible: boolean;
+  message: string;
+  type: "success" | "error" | "info";
+};
+
+function Toast({ state }: { state: ToastState }) {
+  if (!state.visible) return null;
+  const palette =
+    state.type === "success"
+      ? { bg: "#ECFDF5", border: "#A7F3D0", icon: "#10B981", text: "#065F46" }
+      : state.type === "error"
+        ? {
+            bg: "#FEF2F2",
+            border: "#FECACA",
+            icon: "#EF4444",
+            text: "#991B1B",
+          }
+        : {
+            bg: "#EFF6FF",
+            border: "#BFDBFE",
+            icon: "#3B82F6",
+            text: "#1E3A8A",
+          };
+  return (
+    <View style={styles.toastWrap} pointerEvents="none">
+      <View
+        style={[
+          styles.toastCard,
+          { backgroundColor: palette.bg, borderColor: palette.border },
+        ]}
+      >
+        {state.type === "success" ? (
+          <CheckCircle size={18} color={palette.icon} />
+        ) : state.type === "error" ? (
+          <XCircle size={18} color={palette.icon} />
+        ) : (
+          <Info size={18} color={palette.icon} />
+        )}
+        <Text style={[styles.toastText, { color: palette.text }]}>
+          {state.message}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// ── Confirm modal (replaces native Alert.alert confirmations) ─────────────────
+
+type ConfirmState = {
+  visible: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  destructive: boolean;
+  onConfirm: () => void;
+};
+
+const DEFAULT_CONFIRM: ConfirmState = {
+  visible: false,
+  title: "",
+  message: "",
+  confirmLabel: "Confirm",
+  destructive: false,
+  onConfirm: () => {},
+};
+
+function ConfirmModal({
+  state,
+  onCancel,
+}: {
+  state: ConfirmState;
+  onCancel: () => void;
+}) {
+  return (
+    <Modal
+      visible={state.visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onCancel}
+    >
+      <View style={styles.confirmOverlay}>
+        <View style={styles.confirmCard}>
+          <View
+            style={[
+              styles.confirmIconCircle,
+              state.destructive
+                ? { backgroundColor: "rgba(239, 68, 68, 0.1)" }
+                : { backgroundColor: "rgba(124, 139, 109, 0.12)" },
+            ]}
+          >
+            <AlertTriangle
+              size={22}
+              color={state.destructive ? "#EF4444" : "#7C8B6D"}
+            />
+          </View>
+          <Text style={styles.confirmTitle}>{state.title}</Text>
+          <Text style={styles.confirmMessage}>{state.message}</Text>
+          <View style={styles.confirmActions}>
+            <TouchableOpacity
+              onPress={onCancel}
+              style={styles.confirmCancelBtn}
+            >
+              <Text style={styles.confirmCancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={state.onConfirm}
+              style={[
+                styles.confirmActionBtn,
+                state.destructive
+                  ? { backgroundColor: "#EF4444" }
+                  : { backgroundColor: "#7C8B6D" },
+              ]}
+            >
+              <Text style={styles.confirmActionText}>{state.confirmLabel}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -92,6 +224,77 @@ export default function AdminDashboard() {
   const [processingId, setProcessingId] = useState<number | null>(null);
   const [showAddFeaturedModal, setShowAddFeaturedModal] = useState(false);
   const [addFeaturedSearch, setAddFeaturedSearch] = useState("");
+
+  // ── New: toast + confirm modal state ──────────────────────────────────────
+  const [toast, setToast] = useState<ToastState>({
+    visible: false,
+    message: "",
+    type: "info",
+  });
+  const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = (message: string, type: ToastState["type"] = "info") => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ visible: true, message, type });
+    toastTimer.current = setTimeout(
+      () => setToast((t) => ({ ...t, visible: false })),
+      2600,
+    );
+  };
+
+  const [confirmState, setConfirmState] =
+    useState<ConfirmState>(DEFAULT_CONFIRM);
+  const showConfirm = (opts: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    destructive?: boolean;
+    onConfirm: () => void;
+  }) => {
+    setConfirmState({
+      visible: true,
+      title: opts.title,
+      message: opts.message,
+      confirmLabel: opts.confirmLabel || "Confirm",
+      destructive: !!opts.destructive,
+      onConfirm: () => {
+        setConfirmState(DEFAULT_CONFIRM);
+        opts.onConfirm();
+      },
+    });
+  };
+  const dismissConfirm = () => setConfirmState(DEFAULT_CONFIRM);
+
+  // ── New: pending application detail modal ─────────────────────────────────
+  const [selectedApplication, setSelectedApplication] = useState<any | null>(
+    null,
+  );
+
+  // ── New: restaurants management (approved list) ───────────────────────────
+  const [selectedRestaurant, setSelectedRestaurant] = useState<any | null>(
+    null,
+  );
+  const [restaurantEditMode, setRestaurantEditMode] = useState(false);
+  const [restaurantEditForm, setRestaurantEditForm] = useState<any>({});
+  const [restaurantReservations, setRestaurantReservations] = useState<any[]>(
+    [],
+  );
+  const [loadingReservations, setLoadingReservations] = useState(false);
+  const [showAddReservationModal, setShowAddReservationModal] = useState(false);
+  const [newReservation, setNewReservation] = useState({
+    customer_email: "",
+    guest_name: "",
+    guest_phone: "",
+    people_count: "2",
+    date: "",
+    time: "",
+    notes: "",
+  });
+  const [savingRestaurant, setSavingRestaurant] = useState(false);
+
+  // ── New: user edit modal ───────────────────────────────────────────────────
+  const [editingUser, setEditingUser] = useState<any | null>(null);
+  const [userEditForm, setUserEditForm] = useState<any>({});
+  const [savingUser, setSavingUser] = useState(false);
 
   // ── Fetch users ────────────────────────────────────────────────────────────
 
@@ -198,64 +401,57 @@ export default function AdminDashboard() {
     restaurantName: string,
   ) => {
     const actionLabel = action === "approve" ? "Approve" : "Decline";
-    Alert.alert(
-      `${actionLabel} Restaurant`,
-      `Are you sure you want to ${action} "${restaurantName}"?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: actionLabel,
-          style: action === "decline" ? "destructive" : "default",
-          onPress: async () => {
-            setProcessingId(restaurantId);
-            try {
-              const token = await AsyncStorage.getItem("reserva_token");
-              const res = await fetch(
-                getApiUrl(`/api/admin/restaurants/${restaurantId}/${action}`),
-                {
-                  method: "POST",
-                  headers: { Authorization: `Bearer ${token}` },
-                },
-              );
-              if (!res.ok) throw new Error(`Failed to ${action}`);
-              setPendingRestaurants((prev) =>
-                prev.filter((r) => r.id !== restaurantId),
-              );
-              // Refresh approved list after approving
-              if (action === "approve") fetchAllApprovedRestaurants();
-              Alert.alert(
-                "Done",
-                action === "approve"
-                  ? `"${restaurantName}" has been approved.`
-                  : `"${restaurantName}" application has been declined.`,
-              );
-            } catch (err) {
-              console.error(`Admin ${action} error:`, err);
-              Alert.alert("Error", `Failed to ${action} restaurant.`);
-            } finally {
-              setProcessingId(null);
-            }
-          },
-        },
-      ],
-    );
+    showConfirm({
+      title: `${actionLabel} Restaurant`,
+      message: `Are you sure you want to ${action} "${restaurantName}"?`,
+      confirmLabel: actionLabel,
+      destructive: action === "decline",
+      onConfirm: async () => {
+        setProcessingId(restaurantId);
+        try {
+          const token = await AsyncStorage.getItem("reserva_token");
+          const res = await fetch(
+            getApiUrl(`/api/admin/restaurants/${restaurantId}/${action}`),
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          if (!res.ok) throw new Error(`Failed to ${action}`);
+          setPendingRestaurants((prev) =>
+            prev.filter((r) => r.id !== restaurantId),
+          );
+          setSelectedApplication(null);
+          // Refresh approved list after approving
+          if (action === "approve") fetchAllApprovedRestaurants();
+          showToast(
+            action === "approve"
+              ? `"${restaurantName}" has been approved.`
+              : `"${restaurantName}" application has been declined.`,
+            "success",
+          );
+        } catch (err) {
+          console.error(`Admin ${action} error:`, err);
+          showToast(`Failed to ${action} restaurant.`, "error");
+        } finally {
+          setProcessingId(null);
+        }
+      },
+    });
   };
 
   // ── Add restaurant to featured ─────────────────────────────────────────────
 
   const handleAddFeatured = async (restaurant: any) => {
     if (featuredRestaurants.length >= MAX_FEATURED) {
-      Alert.alert(
-        "Limit Reached",
-        `You can feature at most ${MAX_FEATURED} restaurants at a time. Remove one to add another.`,
+      showToast(
+        `You can feature at most ${MAX_FEATURED} restaurants at a time.`,
+        "error",
       );
       return;
     }
     if (featuredRestaurants.some((r) => r.id === restaurant.id)) {
-      Alert.alert(
-        "Already Featured",
-        `"${restaurant.name}" is already in the featured list.`,
-      );
+      showToast(`"${restaurant.name}" is already featured.`, "info");
       return;
     }
     try {
@@ -271,48 +467,311 @@ export default function AdminDashboard() {
       setFeaturedRestaurants((prev) => [...prev, restaurant]);
       setShowAddFeaturedModal(false);
       setAddFeaturedSearch("");
+      showToast(`"${restaurant.name}" added to featured.`, "success");
     } catch (err) {
       console.error("Add featured error:", err);
-      Alert.alert("Error", "Failed to add restaurant to featured.");
+      showToast("Failed to add restaurant to featured.", "error");
     }
   };
 
   // ── Remove restaurant from featured ───────────────────────────────────────
 
   const handleRemoveFeatured = (restaurant: any) => {
-    Alert.alert(
-      "Remove from Featured",
-      `Remove "${restaurant.name}" from the recommended list?`,
-      [
-        { text: "Cancel", style: "cancel" },
+    showConfirm({
+      title: "Remove from Featured",
+      message: `Remove "${restaurant.name}" from the recommended list?`,
+      confirmLabel: "Remove",
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          const token = await AsyncStorage.getItem("reserva_token");
+          const res = await fetch(
+            getApiUrl(`/api/admin/featured/${restaurant.id}`),
+            {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          if (!res.ok) throw new Error("Failed to remove featured");
+          setFeaturedRestaurants((prev) =>
+            prev.filter((r) => r.id !== restaurant.id),
+          );
+          showToast(`"${restaurant.name}" removed from featured.`, "success");
+        } catch (err) {
+          console.error("Remove featured error:", err);
+          showToast("Failed to remove restaurant from featured.", "error");
+        }
+      },
+    });
+  };
+
+  // ── New: hide / unhide / delete restaurant ─────────────────────────────────
+
+  const handleToggleHideRestaurant = (restaurant: any) => {
+    const willHide = !restaurant.is_hidden;
+    showConfirm({
+      title: willHide ? "Hide Restaurant" : "Unhide Restaurant",
+      message: willHide
+        ? `"${restaurant.name}" will be hidden from customers immediately.`
+        : `"${restaurant.name}" will be visible to customers again.`,
+      confirmLabel: willHide ? "Hide" : "Unhide",
+      destructive: willHide,
+      onConfirm: async () => {
+        try {
+          const token = await AsyncStorage.getItem("reserva_token");
+          const res = await fetch(
+            getApiUrl(
+              `/api/admin/restaurants/${restaurant.id}/${willHide ? "hide" : "unhide"}`,
+            ),
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          if (!res.ok) throw new Error("Failed to update visibility");
+          const updater = (list: any[]) =>
+            list.map((r) =>
+              r.id === restaurant.id ? { ...r, is_hidden: willHide } : r,
+            );
+          setAllApprovedRestaurants(updater);
+          setSelectedRestaurant((prev: any) =>
+            prev && prev.id === restaurant.id
+              ? { ...prev, is_hidden: willHide }
+              : prev,
+          );
+          showToast(
+            willHide
+              ? `"${restaurant.name}" is now hidden.`
+              : `"${restaurant.name}" is visible again.`,
+            "success",
+          );
+        } catch (err) {
+          console.error("Toggle hide restaurant error:", err);
+          showToast("Failed to update restaurant visibility.", "error");
+        }
+      },
+    });
+  };
+
+  const handleDeleteRestaurant = (restaurant: any) => {
+    showConfirm({
+      title: "Delete Restaurant",
+      message: `This permanently deletes "${restaurant.name}" along with its reservations, reviews, and tables. This cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          const token = await AsyncStorage.getItem("reserva_token");
+          const res = await fetch(
+            getApiUrl(`/api/admin/restaurants/${restaurant.id}`),
+            {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          if (!res.ok) throw new Error("Failed to delete restaurant");
+          setAllApprovedRestaurants((prev) =>
+            prev.filter((r) => r.id !== restaurant.id),
+          );
+          setFeaturedRestaurants((prev) =>
+            prev.filter((r) => r.id !== restaurant.id),
+          );
+          setSelectedRestaurant(null);
+          showToast(`"${restaurant.name}" has been deleted.`, "success");
+        } catch (err) {
+          console.error("Delete restaurant error:", err);
+          showToast("Failed to delete restaurant.", "error");
+        }
+      },
+    });
+  };
+
+  // ── New: fetch reservations for a restaurant (admin view) ─────────────────
+
+  const fetchRestaurantReservations = async (restaurantId: number) => {
+    setLoadingReservations(true);
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(
+        getApiUrl(`/api/admin/restaurants/${restaurantId}/reservations`),
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) throw new Error("Failed to fetch reservations");
+      const data = await res.json();
+      setRestaurantReservations(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Fetch restaurant reservations error:", err);
+      setRestaurantReservations([]);
+    } finally {
+      setLoadingReservations(false);
+    }
+  };
+
+  const openRestaurantDetail = (restaurant: any) => {
+    setSelectedRestaurant(restaurant);
+    setRestaurantEditMode(false);
+    setRestaurantEditForm({
+      name: restaurant.name || "",
+      description: restaurant.description || "",
+      cuisine_type: restaurant.cuisine_type || "",
+      open_time: restaurant.open_time || "",
+      close_time: restaurant.close_time || "",
+      deposit_amount: String(restaurant.deposit_amount ?? 0),
+      min_price: String(restaurant.min_price ?? 0),
+      max_price: String(restaurant.max_price ?? 0),
+      phone_number: restaurant.phone_number || "",
+      location: restaurant.location || "",
+    });
+    fetchRestaurantReservations(restaurant.id);
+  };
+
+  const handleSaveRestaurantEdit = async () => {
+    if (!selectedRestaurant) return;
+    setSavingRestaurant(true);
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(
+        getApiUrl(`/api/restaurants/${selectedRestaurant.id}`),
         {
-          text: "Remove",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const token = await AsyncStorage.getItem("reserva_token");
-              const res = await fetch(
-                getApiUrl(`/api/admin/featured/${restaurant.id}`),
-                {
-                  method: "DELETE",
-                  headers: { Authorization: `Bearer ${token}` },
-                },
-              );
-              if (!res.ok) throw new Error("Failed to remove featured");
-              setFeaturedRestaurants((prev) =>
-                prev.filter((r) => r.id !== restaurant.id),
-              );
-            } catch (err) {
-              console.error("Remove featured error:", err);
-              Alert.alert(
-                "Error",
-                "Failed to remove restaurant from featured.",
-              );
-            }
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
           },
+          body: JSON.stringify({
+            ...restaurantEditForm,
+            deposit_amount: Number(restaurantEditForm.deposit_amount) || 0,
+            min_price: Number(restaurantEditForm.min_price) || 0,
+            max_price: Number(restaurantEditForm.max_price) || 0,
+          }),
         },
-      ],
-    );
+      );
+      if (!res.ok) throw new Error("Failed to update restaurant");
+      const updated = { ...selectedRestaurant, ...restaurantEditForm };
+      setAllApprovedRestaurants((prev) =>
+        prev.map((r) => (r.id === selectedRestaurant.id ? updated : r)),
+      );
+      setSelectedRestaurant(updated);
+      setRestaurantEditMode(false);
+      showToast("Restaurant updated.", "success");
+    } catch (err) {
+      console.error("Save restaurant edit error:", err);
+      showToast("Failed to save changes.", "error");
+    } finally {
+      setSavingRestaurant(false);
+    }
+  };
+
+  const handleAddReservation = async () => {
+    if (!selectedRestaurant) return;
+    if (!newReservation.date || !newReservation.time) {
+      showToast("Date and time are required.", "error");
+      return;
+    }
+    if (!newReservation.customer_email && !newReservation.guest_name) {
+      showToast("Add a customer email or a guest name.", "error");
+      return;
+    }
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(
+        getApiUrl(
+          `/api/admin/restaurants/${selectedRestaurant.id}/reservations`,
+        ),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            ...newReservation,
+            people_count: Number(newReservation.people_count) || 1,
+          }),
+        },
+      );
+      if (!res.ok) throw new Error("Failed to add reservation");
+      setShowAddReservationModal(false);
+      setNewReservation({
+        customer_email: "",
+        guest_name: "",
+        guest_phone: "",
+        people_count: "2",
+        date: "",
+        time: "",
+        notes: "",
+      });
+      fetchRestaurantReservations(selectedRestaurant.id);
+      showToast("Reservation added.", "success");
+    } catch (err) {
+      console.error("Add reservation error:", err);
+      showToast("Failed to add reservation.", "error");
+    }
+  };
+
+  // ── New: user edit / delete ────────────────────────────────────────────────
+
+  const openEditUser = (user: any) => {
+    setEditingUser(user);
+    setUserEditForm({
+      name: user.name || "",
+      surname: user.surname || "",
+      email: user.email || "",
+      role: user.role || "customer",
+    });
+  };
+
+  const handleSaveUserEdit = async () => {
+    if (!editingUser) return;
+    setSavingUser(true);
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl(`/api/admin/users/${editingUser.id}`), {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(userEditForm),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || "Failed to update user");
+      setUsers((prev) =>
+        prev.map((u) => (u.id === editingUser.id ? { ...u, ...data.user } : u)),
+      );
+      setEditingUser(null);
+      showToast("User updated.", "success");
+    } catch (err: any) {
+      console.error("Save user edit error:", err);
+      showToast(err?.message || "Failed to update user.", "error");
+    } finally {
+      setSavingUser(false);
+    }
+  };
+
+  const handleDeleteUser = (user: any) => {
+    showConfirm({
+      title: "Delete User",
+      message: `This permanently deletes ${user.name} ${user.surname || ""} and all of their reservations and reviews.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          const token = await AsyncStorage.getItem("reserva_token");
+          const res = await fetch(getApiUrl(`/api/admin/users/${user.id}`), {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data?.error || "Failed to delete user");
+          setUsers((prev) => prev.filter((u) => u.id !== user.id));
+          showToast("User deleted.", "success");
+        } catch (err: any) {
+          console.error("Delete user error:", err);
+          showToast(err?.message || "Failed to delete user.", "error");
+        }
+      },
+    });
   };
 
   const filteredUsers = users.filter(
@@ -325,6 +784,13 @@ export default function AdminDashboard() {
     (r) =>
       r.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       r.location?.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
+
+  const filteredAllRestaurants = allApprovedRestaurants.filter(
+    (r) =>
+      r.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      r.location?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      r.cuisine_type?.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
   const filteredFeatured = featuredRestaurants.filter(
@@ -378,13 +844,29 @@ export default function AdminDashboard() {
             active={activeTab === "requests"}
             onClick={() => setActiveTab("requests")}
             icon={
-              <Store
+              <Clock
                 size={18}
                 color={activeTab === "requests" ? "white" : "#9CA3AF"}
               />
             }
             label="Approvals"
             badge={pendingRestaurants.length}
+          />
+          <AdminTabButton
+            active={activeTab === "restaurants"}
+            onClick={() => {
+              setActiveTab("restaurants");
+              fetchAllApprovedRestaurants();
+            }}
+            icon={
+              <Store
+                size={18}
+                color={activeTab === "restaurants" ? "white" : "#9CA3AF"}
+              />
+            }
+            label="Restaurants"
+            badge={allApprovedRestaurants.length}
+            badgeColor="#7C8B6D"
           />
           <AdminTabButton
             active={activeTab === "bugs"}
@@ -475,11 +957,13 @@ export default function AdminDashboard() {
             <Text style={styles.tabTitle}>
               {activeTab === "requests"
                 ? `Pending Approvals${pendingRestaurants.length > 0 ? ` (${pendingRestaurants.length})` : ""}`
-                : activeTab === "bugs"
-                  ? `Bug Reports${bugReports.length > 0 ? ` (${bugReports.length})` : ""}`
-                  : activeTab === "users"
-                    ? "Users"
-                    : "Payments"}
+                : activeTab === "restaurants"
+                  ? `Restaurants${allApprovedRestaurants.length > 0 ? ` (${allApprovedRestaurants.length})` : ""}`
+                  : activeTab === "bugs"
+                    ? `Bug Reports${bugReports.length > 0 ? ` (${bugReports.length})` : ""}`
+                    : activeTab === "users"
+                      ? "Users"
+                      : "Payments"}
             </Text>
           )}
 
@@ -520,12 +1004,39 @@ export default function AdminDashboard() {
               <RestaurantApplicationCard
                 restaurant={item}
                 processing={processingId === item.id}
+                onPress={() => setSelectedApplication(item)}
                 onApprove={() =>
                   handleRestaurantAction(item.id, "approve", item.name)
                 }
                 onDecline={() =>
                   handleRestaurantAction(item.id, "decline", item.name)
                 }
+              />
+            )}
+          />
+        ) : activeTab === "restaurants" ? (
+          // ── All restaurants management ──────────────────────────────────────
+          <FlatList
+            data={filteredAllRestaurants}
+            keyExtractor={(item) => String(item.id)}
+            contentContainerStyle={styles.listContent}
+            ListEmptyComponent={
+              <View style={styles.emptyState}>
+                <View style={styles.emptyIcon}>
+                  <Store size={32} color="#9CA3AF" />
+                </View>
+                <Text style={styles.emptyTitle}>No Restaurants Yet</Text>
+                <Text style={styles.emptySubtitle}>
+                  Approved restaurants will appear here for management.
+                </Text>
+              </View>
+            }
+            renderItem={({ item }) => (
+              <RestaurantManageCard
+                restaurant={item}
+                onPress={() => openRestaurantDetail(item)}
+                onToggleHide={() => handleToggleHideRestaurant(item)}
+                onDelete={() => handleDeleteRestaurant(item)}
               />
             )}
           />
@@ -667,10 +1178,16 @@ export default function AdminDashboard() {
                   </View>
                 </View>
                 <View style={styles.cardActions}>
-                  <TouchableOpacity style={styles.actionIconButton}>
+                  <TouchableOpacity
+                    style={styles.actionIconButton}
+                    onPress={() => openEditUser(item)}
+                  >
                     <Edit size={16} color="#9CA3AF" />
                   </TouchableOpacity>
-                  <TouchableOpacity style={styles.actionIconButton}>
+                  <TouchableOpacity
+                    style={styles.actionIconButton}
+                    onPress={() => handleDeleteUser(item)}
+                  >
                     <Trash2 size={16} color="#EF4444" />
                   </TouchableOpacity>
                 </View>
@@ -804,6 +1321,713 @@ export default function AdminDashboard() {
           />
         </View>
       </Modal>
+
+      {/* ── Application Detail Modal ───────────────────────────────────────── */}
+      <Modal
+        visible={!!selectedApplication}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setSelectedApplication(null)}
+      >
+        {selectedApplication ? (
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalTitle}>
+                  {selectedApplication.name}
+                </Text>
+                <Text style={styles.modalSubtitle}>Full Application</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setSelectedApplication(null)}
+                style={styles.modalCloseBtn}
+              >
+                <X size={20} color="#2D2D2D" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+            >
+              <View style={styles.detailHeaderRow}>
+                {selectedApplication.logo_url ? (
+                  <Image
+                    source={{ uri: selectedApplication.logo_url }}
+                    style={styles.detailLogo}
+                  />
+                ) : (
+                  <View style={styles.appLogoPlaceholder}>
+                    <ChefHat size={24} color="#9CA3AF" />
+                  </View>
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.detailName}>
+                    {selectedApplication.name}
+                  </Text>
+                  <Text style={styles.appCuisine}>
+                    {selectedApplication.cuisine_type}
+                  </Text>
+                </View>
+                <View style={styles.pendingChip}>
+                  <Clock size={10} color="#d97706" />
+                  <Text style={styles.pendingChipText}>Pending</Text>
+                </View>
+              </View>
+
+              {/* Owner contact */}
+              <View style={styles.detailSection}>
+                <Text style={styles.detailSectionTitle}>Submitted By</Text>
+                <View style={styles.appInfoRow}>
+                  <Users size={12} color="#9CA3AF" />
+                  <Text style={styles.appInfoText}>
+                    {selectedApplication.owner_name}{" "}
+                    {selectedApplication.owner_surname}
+                  </Text>
+                </View>
+                {selectedApplication.owner_email ? (
+                  <View style={styles.appInfoRow}>
+                    <Mail size={12} color="#9CA3AF" />
+                    <Text style={styles.appInfoText}>
+                      {selectedApplication.owner_email}
+                    </Text>
+                  </View>
+                ) : null}
+                {selectedApplication.owner_phone ? (
+                  <View style={styles.appInfoRow}>
+                    <Phone size={12} color="#9CA3AF" />
+                    <Text style={styles.appInfoText}>
+                      {selectedApplication.owner_phone}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {/* Location & contact */}
+              <View style={styles.detailSection}>
+                <Text style={styles.detailSectionTitle}>
+                  Location & Contact
+                </Text>
+                <View style={styles.appInfoRow}>
+                  <MapPin size={12} color="#9CA3AF" />
+                  <Text style={styles.appInfoText}>
+                    {selectedApplication.location || "No location provided"}
+                  </Text>
+                </View>
+                {selectedApplication.phone_number ? (
+                  <View style={styles.appInfoRow}>
+                    <Phone size={12} color="#9CA3AF" />
+                    <Text style={styles.appInfoText}>
+                      {selectedApplication.phone_number}
+                      {selectedApplication.secondary_phone
+                        ? `  ·  ${selectedApplication.secondary_phone}`
+                        : ""}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {/* Operations */}
+              <View style={styles.detailSection}>
+                <Text style={styles.detailSectionTitle}>Operations</Text>
+                <View style={styles.appMetaRow}>
+                  <View style={styles.appMetaItem}>
+                    <Text style={styles.appMetaLabel}>Hours</Text>
+                    <Text style={styles.appMetaValue}>
+                      {selectedApplication.open_time} –{" "}
+                      {selectedApplication.close_time}
+                    </Text>
+                  </View>
+                  <View style={styles.appMetaItem}>
+                    <Text style={styles.appMetaLabel}>Deposit</Text>
+                    <Text style={styles.appMetaValue}>
+                      ${selectedApplication.deposit_amount || 0}
+                    </Text>
+                  </View>
+                  <View style={styles.appMetaItem}>
+                    <Text style={styles.appMetaLabel}>Price Range</Text>
+                    <Text style={styles.appMetaValue}>
+                      {selectedApplication.min_price || 0}–
+                      {selectedApplication.max_price || 0} ֏
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.appMetaRow}>
+                  <View style={styles.appMetaItem}>
+                    <Text style={styles.appMetaLabel}>Cancellation</Text>
+                    <Text style={styles.appMetaValue}>
+                      {selectedApplication.cancellation_policy_hours || 24}h
+                      notice
+                    </Text>
+                  </View>
+                  <View style={styles.appMetaItem}>
+                    <Text style={styles.appMetaLabel}>Outdoor Seating</Text>
+                    <Text style={styles.appMetaValue}>
+                      {selectedApplication.outdoor_seating ? "Yes" : "No"}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Description */}
+              {selectedApplication.description ? (
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>Description</Text>
+                  <Text style={styles.appDescription}>
+                    {selectedApplication.description}
+                  </Text>
+                </View>
+              ) : null}
+
+              {/* Tags */}
+              {(selectedApplication.experience_types?.length > 0 ||
+                selectedApplication.amenities?.length > 0 ||
+                selectedApplication.moods?.length > 0) && (
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>Details</Text>
+                  {selectedApplication.experience_types?.length > 0 && (
+                    <View style={{ marginBottom: 10 }}>
+                      <Text style={styles.detailLabel}>Experience Types</Text>
+                      <TagList
+                        items={selectedApplication.experience_types}
+                        color="#7C8B6D"
+                      />
+                    </View>
+                  )}
+                  {selectedApplication.amenities?.length > 0 && (
+                    <View style={{ marginBottom: 10 }}>
+                      <Text style={styles.detailLabel}>Amenities</Text>
+                      <TagList
+                        items={selectedApplication.amenities}
+                        color="#3B82F6"
+                      />
+                    </View>
+                  )}
+                  {selectedApplication.moods?.length > 0 && (
+                    <View>
+                      <Text style={styles.detailLabel}>Best For</Text>
+                      <TagList
+                        items={selectedApplication.moods}
+                        color="#8B5CF6"
+                      />
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* Photos */}
+              {selectedApplication.images?.length > 0 && (
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>Photos</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View style={{ flexDirection: "row", gap: 10 }}>
+                      {selectedApplication.images.map((img: any) => (
+                        <Image
+                          key={img.id}
+                          source={{ uri: img.url }}
+                          style={styles.galleryThumb}
+                        />
+                      ))}
+                    </View>
+                  </ScrollView>
+                </View>
+              )}
+
+              <View style={[styles.appActions, { marginTop: 8 }]}>
+                <TouchableOpacity
+                  onPress={() =>
+                    handleRestaurantAction(
+                      selectedApplication.id,
+                      "decline",
+                      selectedApplication.name,
+                    )
+                  }
+                  disabled={processingId === selectedApplication.id}
+                  style={styles.declineBtn}
+                >
+                  <X size={16} color="#EF4444" />
+                  <Text style={styles.declineBtnText}>Decline</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() =>
+                    handleRestaurantAction(
+                      selectedApplication.id,
+                      "approve",
+                      selectedApplication.name,
+                    )
+                  }
+                  disabled={processingId === selectedApplication.id}
+                  style={styles.approveBtn}
+                >
+                  <Check size={16} color="white" />
+                  <Text style={styles.approveBtnText}>Approve</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        ) : null}
+      </Modal>
+
+      {/* ── Restaurant Detail / Manage Modal ───────────────────────────────── */}
+      <Modal
+        visible={!!selectedRestaurant}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setSelectedRestaurant(null)}
+      >
+        {selectedRestaurant ? (
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalTitle}>{selectedRestaurant.name}</Text>
+                <Text style={styles.modalSubtitle}>
+                  {selectedRestaurant.is_hidden
+                    ? "Hidden from customers"
+                    : "Live"}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedRestaurant(null);
+                  setRestaurantEditMode(false);
+                }}
+                style={styles.modalCloseBtn}
+              >
+                <X size={20} color="#2D2D2D" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
+            >
+              {/* Top actions */}
+              <View style={styles.appActions}>
+                <TouchableOpacity
+                  onPress={() => handleToggleHideRestaurant(selectedRestaurant)}
+                  style={styles.manageSecondaryBtn}
+                >
+                  {selectedRestaurant.is_hidden ? (
+                    <Eye size={15} color="#6B7280" />
+                  ) : (
+                    <EyeOff size={15} color="#6B7280" />
+                  )}
+                  <Text style={styles.manageSecondaryBtnText}>
+                    {selectedRestaurant.is_hidden ? "Unhide" : "Hide"}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setRestaurantEditMode((v) => !v)}
+                  style={[styles.manageSecondaryBtn, { flex: 1 }]}
+                >
+                  <Edit size={15} color="#6B7280" />
+                  <Text style={styles.manageSecondaryBtnText}>
+                    {restaurantEditMode ? "Cancel Edit" : "Edit Details"}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleDeleteRestaurant(selectedRestaurant)}
+                  style={styles.manageDeleteBtn}
+                >
+                  <Trash2 size={15} color="#EF4444" />
+                </TouchableOpacity>
+              </View>
+
+              {restaurantEditMode ? (
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>Edit Details</Text>
+                  {[
+                    { key: "name", label: "Name" },
+                    { key: "cuisine_type", label: "Cuisine" },
+                    { key: "location", label: "Location" },
+                    { key: "phone_number", label: "Phone" },
+                    { key: "open_time", label: "Open Time" },
+                    { key: "close_time", label: "Close Time" },
+                    { key: "deposit_amount", label: "Deposit ($)" },
+                    { key: "min_price", label: "Min Price (֏)" },
+                    { key: "max_price", label: "Max Price (֏)" },
+                  ].map((f) => (
+                    <View key={f.key} style={{ marginBottom: 12 }}>
+                      <Text style={styles.detailLabel}>{f.label}</Text>
+                      <TextInput
+                        value={String(restaurantEditForm[f.key] ?? "")}
+                        onChangeText={(t) =>
+                          setRestaurantEditForm((prev: any) => ({
+                            ...prev,
+                            [f.key]: t,
+                          }))
+                        }
+                        style={styles.formInput}
+                        placeholderTextColor="#9CA3AF"
+                      />
+                    </View>
+                  ))}
+                  <View style={{ marginBottom: 12 }}>
+                    <Text style={styles.detailLabel}>Description</Text>
+                    <TextInput
+                      value={restaurantEditForm.description ?? ""}
+                      onChangeText={(t) =>
+                        setRestaurantEditForm((prev: any) => ({
+                          ...prev,
+                          description: t,
+                        }))
+                      }
+                      style={[styles.formInput, { height: 90 }]}
+                      multiline
+                      placeholderTextColor="#9CA3AF"
+                    />
+                  </View>
+                  <TouchableOpacity
+                    onPress={handleSaveRestaurantEdit}
+                    disabled={savingRestaurant}
+                    style={styles.approveBtn}
+                  >
+                    {savingRestaurant ? (
+                      <ActivityIndicator size="small" color="white" />
+                    ) : (
+                      <>
+                        <Check size={16} color="white" />
+                        <Text style={styles.approveBtnText}>Save Changes</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.detailSection}>
+                  <Text style={styles.detailSectionTitle}>Overview</Text>
+                  <View style={styles.appInfoRow}>
+                    <MapPin size={12} color="#9CA3AF" />
+                    <Text style={styles.appInfoText}>
+                      {selectedRestaurant.location || "No location"}
+                    </Text>
+                  </View>
+                  {selectedRestaurant.phone_number ? (
+                    <View style={styles.appInfoRow}>
+                      <Phone size={12} color="#9CA3AF" />
+                      <Text style={styles.appInfoText}>
+                        {selectedRestaurant.phone_number}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <View style={styles.appInfoRow}>
+                    <Users size={12} color="#9CA3AF" />
+                    <Text style={styles.appInfoText}>
+                      Owner: {selectedRestaurant.owner_name}{" "}
+                      {selectedRestaurant.owner_surname} ·{" "}
+                      {selectedRestaurant.owner_email}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Reservations / customers */}
+              <View style={styles.detailSection}>
+                <View style={styles.reservationsHeaderRow}>
+                  <Text style={styles.detailSectionTitle}>
+                    Customers & Reservations
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => setShowAddReservationModal(true)}
+                    style={styles.addReservationBtn}
+                  >
+                    <UserPlus size={14} color="white" />
+                    <Text style={styles.addReservationBtnText}>Add</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {loadingReservations ? (
+                  <ActivityIndicator
+                    size="small"
+                    color="#2D2D2D"
+                    style={{ marginVertical: 16 }}
+                  />
+                ) : restaurantReservations.length === 0 ? (
+                  <Text style={styles.emptySubtitle}>
+                    No reservations yet for this restaurant.
+                  </Text>
+                ) : (
+                  restaurantReservations.map((rv: any) => (
+                    <View key={rv.id} style={styles.reservationRow}>
+                      <View style={styles.reservationDateBox}>
+                        <Calendar size={12} color="#7C8B6D" />
+                        <Text style={styles.reservationDateText}>
+                          {rv.date}
+                        </Text>
+                        <Text style={styles.reservationTimeText}>
+                          {rv.time}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.reservationName}>
+                          {rv.customer_name
+                            ? `${rv.customer_name} ${rv.customer_surname || ""}`
+                            : rv.guest_name || "Guest"}
+                        </Text>
+                        <Text style={styles.reservationMeta}>
+                          {rv.people_count} guests
+                          {rv.customer_phone || rv.guest_phone
+                            ? ` · ${rv.customer_phone || rv.guest_phone}`
+                            : ""}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.reservationStatusChip,
+                          rv.status === "confirmed"
+                            ? { backgroundColor: "rgba(16,185,129,0.1)" }
+                            : rv.status === "cancelled" ||
+                                rv.status === "declined"
+                              ? { backgroundColor: "rgba(239,68,68,0.1)" }
+                              : { backgroundColor: "rgba(217,119,6,0.1)" },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.reservationStatusText,
+                            rv.status === "confirmed"
+                              ? { color: "#10B981" }
+                              : rv.status === "cancelled" ||
+                                  rv.status === "declined"
+                                ? { color: "#EF4444" }
+                                : { color: "#d97706" },
+                          ]}
+                        >
+                          {rv.status}
+                        </Text>
+                      </View>
+                    </View>
+                  ))
+                )}
+              </View>
+            </ScrollView>
+          </View>
+        ) : null}
+      </Modal>
+
+      {/* ── Add Reservation Modal ──────────────────────────────────────────── */}
+      <Modal
+        visible={showAddReservationModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAddReservationModal(false)}
+      >
+        <View style={styles.confirmOverlay}>
+          <View style={styles.formCard}>
+            <Text style={styles.confirmTitle}>Add Reservation</Text>
+            <Text style={[styles.confirmMessage, { marginBottom: 12 }]}>
+              Link to an existing customer by email, or add a guest.
+            </Text>
+
+            <Text style={styles.detailLabel}>Customer Email (optional)</Text>
+            <TextInput
+              value={newReservation.customer_email}
+              onChangeText={(t) =>
+                setNewReservation((prev) => ({ ...prev, customer_email: t }))
+              }
+              style={styles.formInput}
+              placeholder="customer@email.com"
+              autoCapitalize="none"
+              placeholderTextColor="#9CA3AF"
+            />
+
+            <Text style={[styles.detailLabel, { marginTop: 10 }]}>
+              Guest Name (if no account)
+            </Text>
+            <TextInput
+              value={newReservation.guest_name}
+              onChangeText={(t) =>
+                setNewReservation((prev) => ({ ...prev, guest_name: t }))
+              }
+              style={styles.formInput}
+              placeholder="Guest full name"
+              placeholderTextColor="#9CA3AF"
+            />
+
+            <Text style={[styles.detailLabel, { marginTop: 10 }]}>
+              Guest Phone
+            </Text>
+            <TextInput
+              value={newReservation.guest_phone}
+              onChangeText={(t) =>
+                setNewReservation((prev) => ({ ...prev, guest_phone: t }))
+              }
+              style={styles.formInput}
+              placeholder="+1 555 0100"
+              placeholderTextColor="#9CA3AF"
+            />
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.detailLabel}>Date</Text>
+                <TextInput
+                  value={newReservation.date}
+                  onChangeText={(t) =>
+                    setNewReservation((prev) => ({ ...prev, date: t }))
+                  }
+                  style={styles.formInput}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#9CA3AF"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.detailLabel}>Time</Text>
+                <TextInput
+                  value={newReservation.time}
+                  onChangeText={(t) =>
+                    setNewReservation((prev) => ({ ...prev, time: t }))
+                  }
+                  style={styles.formInput}
+                  placeholder="HH:MM"
+                  placeholderTextColor="#9CA3AF"
+                />
+              </View>
+              <View style={{ width: 90 }}>
+                <Text style={styles.detailLabel}>Guests</Text>
+                <TextInput
+                  value={newReservation.people_count}
+                  onChangeText={(t) =>
+                    setNewReservation((prev) => ({
+                      ...prev,
+                      people_count: t,
+                    }))
+                  }
+                  style={styles.formInput}
+                  keyboardType="number-pad"
+                  placeholderTextColor="#9CA3AF"
+                />
+              </View>
+            </View>
+
+            <Text style={[styles.detailLabel, { marginTop: 10 }]}>
+              Notes (optional)
+            </Text>
+            <TextInput
+              value={newReservation.notes}
+              onChangeText={(t) =>
+                setNewReservation((prev) => ({ ...prev, notes: t }))
+              }
+              style={styles.formInput}
+              placeholder="Anniversary, allergy, etc."
+              placeholderTextColor="#9CA3AF"
+            />
+
+            <View style={styles.confirmActions}>
+              <TouchableOpacity
+                onPress={() => setShowAddReservationModal(false)}
+                style={styles.confirmCancelBtn}
+              >
+                <Text style={styles.confirmCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleAddReservation}
+                style={[
+                  styles.confirmActionBtn,
+                  { backgroundColor: "#7C8B6D" },
+                ]}
+              >
+                <Text style={styles.confirmActionText}>Add Reservation</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Edit User Modal ─────────────────────────────────────────────────── */}
+      <Modal
+        visible={!!editingUser}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditingUser(null)}
+      >
+        <View style={styles.confirmOverlay}>
+          <View style={styles.formCard}>
+            <Text style={styles.confirmTitle}>Edit User</Text>
+
+            <Text style={styles.detailLabel}>First Name</Text>
+            <TextInput
+              value={userEditForm.name ?? ""}
+              onChangeText={(t) =>
+                setUserEditForm((prev: any) => ({ ...prev, name: t }))
+              }
+              style={styles.formInput}
+              placeholderTextColor="#9CA3AF"
+            />
+
+            <Text style={[styles.detailLabel, { marginTop: 10 }]}>
+              Last Name
+            </Text>
+            <TextInput
+              value={userEditForm.surname ?? ""}
+              onChangeText={(t) =>
+                setUserEditForm((prev: any) => ({ ...prev, surname: t }))
+              }
+              style={styles.formInput}
+              placeholderTextColor="#9CA3AF"
+            />
+
+            <Text style={[styles.detailLabel, { marginTop: 10 }]}>Email</Text>
+            <TextInput
+              value={userEditForm.email ?? ""}
+              onChangeText={(t) =>
+                setUserEditForm((prev: any) => ({ ...prev, email: t }))
+              }
+              style={styles.formInput}
+              autoCapitalize="none"
+              placeholderTextColor="#9CA3AF"
+            />
+
+            <Text style={[styles.detailLabel, { marginTop: 10 }]}>Role</Text>
+            <View style={styles.roleSelectRow}>
+              {["customer", "owner", "admin"].map((r) => (
+                <TouchableOpacity
+                  key={r}
+                  onPress={() =>
+                    setUserEditForm((prev: any) => ({ ...prev, role: r }))
+                  }
+                  style={[
+                    styles.roleSelectChip,
+                    userEditForm.role === r && styles.roleSelectChipActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.roleSelectChipText,
+                      userEditForm.role === r &&
+                        styles.roleSelectChipTextActive,
+                    ]}
+                  >
+                    {r}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.confirmActions}>
+              <TouchableOpacity
+                onPress={() => setEditingUser(null)}
+                style={styles.confirmCancelBtn}
+              >
+                <Text style={styles.confirmCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSaveUserEdit}
+                disabled={savingUser}
+                style={[
+                  styles.confirmActionBtn,
+                  { backgroundColor: "#7C8B6D" },
+                ]}
+              >
+                {savingUser ? (
+                  <ActivityIndicator size="small" color="white" />
+                ) : (
+                  <Text style={styles.confirmActionText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <ConfirmModal state={confirmState} onCancel={dismissConfirm} />
+      <Toast state={toast} />
     </View>
   );
 }
@@ -875,18 +2099,25 @@ function FeaturedRestaurantCard({
 function RestaurantApplicationCard({
   restaurant,
   processing,
+  onPress,
   onApprove,
   onDecline,
 }: {
   restaurant: any;
   processing: boolean;
+  onPress?: () => void;
   onApprove: () => void;
   onDecline: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <View style={styles.appCard}>
+    <TouchableOpacity
+      style={styles.appCard}
+      onPress={onPress}
+      activeOpacity={0.85}
+      disabled={!onPress}
+    >
       <View style={styles.appCardHeader}>
         {restaurant.logo_url ? (
           <Image source={{ uri: restaurant.logo_url }} style={styles.appLogo} />
@@ -1014,7 +2245,120 @@ function RestaurantApplicationCard({
           )}
         </TouchableOpacity>
       </View>
-    </View>
+    </TouchableOpacity>
+  );
+}
+
+// ── Restaurant management card (approved restaurants tab) ────────────────────
+
+function RestaurantManageCard({
+  restaurant,
+  onPress,
+  onToggleHide,
+  onDelete,
+}: {
+  restaurant: any;
+  onPress: () => void;
+  onToggleHide: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={styles.manageCard}
+      onPress={onPress}
+      activeOpacity={0.85}
+    >
+      <View style={styles.appCardHeader}>
+        {restaurant.logo_url ? (
+          <Image source={{ uri: restaurant.logo_url }} style={styles.appLogo} />
+        ) : (
+          <View style={styles.appLogoPlaceholder}>
+            <ChefHat size={20} color="#9CA3AF" />
+          </View>
+        )}
+        <View style={{ flex: 1 }}>
+          <Text style={styles.appName}>{restaurant.name}</Text>
+          <Text style={styles.appCuisine}>{restaurant.cuisine_type}</Text>
+        </View>
+        {restaurant.is_hidden ? (
+          <View style={styles.hiddenChip}>
+            <EyeOff size={10} color="#6B7280" />
+            <Text style={styles.hiddenChipText}>Hidden</Text>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={styles.appInfoRow}>
+        <MapPin size={12} color="#9CA3AF" />
+        <Text style={styles.appInfoText} numberOfLines={1}>
+          {restaurant.location || "No location"}
+        </Text>
+      </View>
+
+      <View style={styles.appMetaRow}>
+        <View style={styles.appMetaItem}>
+          <Text style={styles.appMetaLabel}>Reservations</Text>
+          <Text style={styles.appMetaValue}>
+            {restaurant.reservation_count ?? 0}
+          </Text>
+        </View>
+        <View style={styles.appMetaItem}>
+          <Text style={styles.appMetaLabel}>Owner</Text>
+          <Text style={styles.appMetaValue} numberOfLines={1}>
+            {restaurant.owner_name} {restaurant.owner_surname}
+          </Text>
+        </View>
+        <View style={styles.appMetaItem}>
+          <Text style={styles.appMetaLabel}>Status</Text>
+          <Text
+            style={[
+              styles.appMetaValue,
+              { color: restaurant.is_hidden ? "#9CA3AF" : "#10B981" },
+            ]}
+          >
+            {restaurant.is_hidden ? "Hidden" : "Live"}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.appActions}>
+        <TouchableOpacity
+          onPress={(e: any) => {
+            e?.stopPropagation?.();
+            onToggleHide();
+          }}
+          style={styles.manageSecondaryBtn}
+        >
+          {restaurant.is_hidden ? (
+            <Eye size={15} color="#6B7280" />
+          ) : (
+            <EyeOff size={15} color="#6B7280" />
+          )}
+          <Text style={styles.manageSecondaryBtnText}>
+            {restaurant.is_hidden ? "Unhide" : "Hide"}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={(e: any) => {
+            e?.stopPropagation?.();
+            onPress();
+          }}
+          style={[styles.manageSecondaryBtn, { flex: 1 }]}
+        >
+          <Edit size={15} color="#6B7280" />
+          <Text style={styles.manageSecondaryBtnText}>Manage</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={(e: any) => {
+            e?.stopPropagation?.();
+            onDelete();
+          }}
+          style={styles.manageDeleteBtn}
+        >
+          <Trash2 size={15} color="#EF4444" />
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
   );
 }
 
@@ -1659,4 +3003,275 @@ const styles = StyleSheet.create({
   },
 
   loader: { flex: 1, justifyContent: "center", alignItems: "center" },
+
+  // ── Toast ──────────────────────────────────────────────────────────────────
+  toastWrap: {
+    position: "absolute",
+    top: 12,
+    left: 0,
+    right: 0,
+    alignItems: "center",
+    zIndex: 999,
+  },
+  toastCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    maxWidth: "90%",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  toastText: { fontSize: 13, fontWeight: "700", flexShrink: 1 },
+
+  // ── Confirm modal ────────────────────────────────────────────────────────────
+  confirmOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  confirmCard: {
+    backgroundColor: "white",
+    borderRadius: 24,
+    padding: 24,
+    width: "100%",
+    maxWidth: 380,
+    alignItems: "center",
+  },
+  confirmIconCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  confirmTitle: {
+    fontSize: 17,
+    fontWeight: "900",
+    color: "#2D2D2D",
+    textAlign: "center",
+    marginBottom: 6,
+  },
+  confirmMessage: {
+    fontSize: 13,
+    color: "#6B7280",
+    textAlign: "center",
+    lineHeight: 19,
+  },
+  confirmActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 20,
+    width: "100%",
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 16,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+  },
+  confirmCancelText: { fontSize: 13, fontWeight: "800", color: "#6B7280" },
+  confirmActionBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 16,
+    alignItems: "center",
+  },
+  confirmActionText: { fontSize: 13, fontWeight: "800", color: "white" },
+
+  // ── Generic form card (used by add-reservation / edit-user modals) ──────────
+  formCard: {
+    backgroundColor: "white",
+    borderRadius: 24,
+    padding: 22,
+    width: "100%",
+    maxWidth: 420,
+  },
+  formInput: {
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 13,
+    color: "#2D2D2D",
+    marginTop: 4,
+  },
+  roleSelectRow: { flexDirection: "row", gap: 8, marginTop: 6 },
+  roleSelectChip: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#F3F4F6",
+    alignItems: "center",
+  },
+  roleSelectChipActive: { backgroundColor: "#2D2D2D" },
+  roleSelectChipText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#6B7280",
+    textTransform: "uppercase",
+  },
+  roleSelectChipTextActive: { color: "white" },
+
+  // ── Restaurant management card ────────────────────────────────────────────
+  manageCard: {
+    backgroundColor: "white",
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+    padding: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  hiddenChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#F3F4F6",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  hiddenChipText: {
+    fontSize: 9,
+    fontWeight: "900",
+    color: "#6B7280",
+    textTransform: "uppercase",
+  },
+  manageSecondaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 18,
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  manageSecondaryBtnText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#6B7280",
+    textTransform: "uppercase",
+  },
+  manageDeleteBtn: {
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 18,
+    backgroundColor: "rgba(239, 68, 68, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  // ── Detail modal sections (application + restaurant manage) ────────────────
+  detailHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 20,
+  },
+  detailLogo: {
+    width: 60,
+    height: 60,
+    borderRadius: 18,
+    resizeMode: "contain",
+    backgroundColor: "#F5EEE7",
+  },
+  detailName: { fontSize: 19, fontWeight: "900", color: "#2D2D2D" },
+  detailSection: {
+    backgroundColor: "rgba(0,0,0,0.02)",
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 16,
+  },
+  detailSectionTitle: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#9CA3AF",
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+    marginBottom: 10,
+  },
+  galleryThumb: {
+    width: 100,
+    height: 100,
+    borderRadius: 14,
+    backgroundColor: "#F5EEE7",
+  },
+
+  // ── Reservations list (inside restaurant manage modal) ──────────────────────
+  reservationsHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  addReservationBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "#7C8B6D",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  addReservationBtnText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "white",
+    textTransform: "uppercase",
+  },
+  reservationRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    backgroundColor: "white",
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.05)",
+  },
+  reservationDateBox: {
+    alignItems: "center",
+    width: 56,
+  },
+  reservationDateText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#2D2D2D",
+    marginTop: 2,
+  },
+  reservationTimeText: { fontSize: 9, color: "#9CA3AF" },
+  reservationName: { fontSize: 13, fontWeight: "800", color: "#2D2D2D" },
+  reservationMeta: { fontSize: 11, color: "#9CA3AF", marginTop: 2 },
+  reservationStatusChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  reservationStatusText: {
+    fontSize: 9,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
 });
