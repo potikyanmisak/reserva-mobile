@@ -372,13 +372,122 @@ export default function RestaurantDetail() {
     return `https://picsum.photos/seed/${id}/1200/800`;
   };
 
-  const isOpen = (): boolean => {
-    if (!restaurant?.open_time || !restaurant?.close_time) return true;
+  const toMin = (hhmm: string): number => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return h * 60 + m;
+  };
+
+  // Returns the schedule row for a given day_of_week (0=Sun..6=Sat), or
+  // falls back to the restaurant's flat open_time/close_time/is_24_hours if
+  // the owner hasn't set day-specific hours for that day.
+  const getScheduleForDay = (dow: number): any => {
+    const match = restaurant?.schedules?.find(
+      (s: any) => s.day_of_week === dow,
+    );
+    if (match) return match;
+    if (restaurant?.open_time && restaurant?.close_time) {
+      return {
+        open_time: restaurant.open_time,
+        close_time: restaurant.close_time,
+        is_closed: false,
+        is_24_hours: !!restaurant.is_24_hours,
+      };
+    }
+    return null;
+  };
+
+  // Walks forward from a given day (starting `fromOffset` days ahead) to
+  // find the next day that isn't marked closed, returning its open_time.
+  const findNextOpenTime = (todayDow: number): string | null => {
+    for (let offset = 1; offset <= 7; offset++) {
+      const dow = (todayDow + offset) % 7;
+      const schedule = getScheduleForDay(dow);
+      if (schedule && !schedule.is_closed && schedule.open_time) {
+        return schedule.open_time;
+      }
+    }
+    return null;
+  };
+
+  // Computes { open, time, is24Hours } based on today's (and, for overnight
+  // hours, yesterday's) schedule — mirrors the same day_of_week logic the
+  // booking endpoint uses server-side.
+  const getOpenStatus = (): {
+    open: boolean;
+    time: string | null;
+    is24Hours: boolean;
+  } => {
+    if (
+      !restaurant?.schedules?.length &&
+      (!restaurant?.open_time || !restaurant?.close_time)
+    ) {
+      return { open: true, time: null, is24Hours: false };
+    }
     const now = new Date();
-    const [oh, om] = restaurant.open_time.split(":").map(Number);
-    const [ch, cm] = restaurant.close_time.split(":").map(Number);
+    const todayDow = now.getDay();
     const cur = now.getHours() * 60 + now.getMinutes();
-    return cur >= oh * 60 + om && cur <= ch * 60 + cm;
+
+    const today = getScheduleForDay(todayDow);
+    const yesterday = getScheduleForDay((todayDow + 6) % 7);
+
+    // Today is flagged open 24 hours — no need to compute a close time
+    if (today && !today.is_closed && today.is_24_hours) {
+      return { open: true, time: null, is24Hours: true };
+    }
+
+    // Still within yesterday's overnight hours (e.g. open 18:00, close 02:00)
+    if (
+      yesterday &&
+      !yesterday.is_closed &&
+      !yesterday.is_24_hours &&
+      yesterday.open_time &&
+      yesterday.close_time
+    ) {
+      const yOpen = toMin(yesterday.open_time);
+      const yClose = toMin(yesterday.close_time);
+      if (yClose <= yOpen && cur < yClose) {
+        return { open: true, time: yesterday.close_time, is24Hours: false };
+      }
+    }
+    // Yesterday was flagged 24 hours — still counts as open until today's
+    // schedule takes over (handled by the branches below), unless today is
+    // also 24 hours (already returned above).
+    if (
+      yesterday &&
+      !yesterday.is_closed &&
+      yesterday.is_24_hours &&
+      (!today || today.is_closed)
+    ) {
+      return { open: true, time: null, is24Hours: true };
+    }
+
+    if (!today || today.is_closed) {
+      return {
+        open: false,
+        time: findNextOpenTime(todayDow),
+        is24Hours: false,
+      };
+    }
+
+    const openMin = toMin(today.open_time);
+    const closeMin = toMin(today.close_time);
+
+    if (closeMin <= openMin) {
+      // Today's hours run past midnight
+      if (cur >= openMin)
+        return { open: true, time: today.close_time, is24Hours: false };
+      if (cur < closeMin)
+        return { open: true, time: today.close_time, is24Hours: false };
+      return { open: false, time: today.open_time, is24Hours: false };
+    }
+
+    if (cur >= openMin && cur < closeMin) {
+      return { open: true, time: today.close_time, is24Hours: false };
+    }
+    if (cur < openMin) {
+      return { open: false, time: today.open_time, is24Hours: false };
+    }
+    return { open: false, time: findNextOpenTime(todayDow), is24Hours: false };
   };
 
   if (!restaurant) {
@@ -396,7 +505,8 @@ export default function RestaurantDetail() {
 
   const heroImage = getHeroImage();
   const subtitle = getSubtitle();
-  const open = isOpen();
+  const openStatus = getOpenStatus();
+  const open = openStatus.open;
   const priceRange = getPriceRange();
 
   return (
@@ -500,11 +610,17 @@ export default function RestaurantDetail() {
                   open ? styles.openText : styles.closedText,
                 ]}
               >
-                {open
-                  ? t("restaurant_detail.open")
-                  : t("restaurant_detail.closed")}{" "}
-                · {t("restaurant_detail.closes_label")}{" "}
-                {restaurant.close_time || "23:00"}
+                {openStatus.is24Hours
+                  ? t("restaurant_detail.open_24_hours")
+                  : `${
+                      open
+                        ? t("restaurant_detail.open")
+                        : t("restaurant_detail.closed")
+                    } · ${
+                      open
+                        ? t("restaurant_detail.closes_label")
+                        : t("restaurant_detail.opens_label")
+                    } ${openStatus.time || "—"}`}
               </Text>
             </View>
 

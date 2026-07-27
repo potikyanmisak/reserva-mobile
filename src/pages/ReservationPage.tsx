@@ -228,6 +228,30 @@ export default function ReservationPage() {
     ? Boolean(startTime)
     : Boolean(startTime && endTime);
 
+  // Only offer the outdoor seating toggle if the restaurant actually has
+  // outdoor seating configured.
+  const hasOutdoorSeating = Boolean(restaurant?.outdoor_seating);
+  const seatingOptions = hasOutdoorSeating ? ["indoor", "outdoor"] : ["indoor"];
+
+  // Once a seating preference is chosen, only show tables/resources that
+  // match it (e.g. tapping "Outdoor" should only surface outdoor tables).
+  const filteredResourceTypes = seatingPreference
+    ? resourceTypes.filter((rt) => rt.location === seatingPreference)
+    : resourceTypes;
+
+  // If the currently selected resource no longer matches the chosen seating
+  // preference, clear it so we don't keep an indoor table selected while
+  // "Outdoor" is active (or vice versa).
+  useEffect(() => {
+    if (
+      selectedResource &&
+      seatingPreference &&
+      selectedResource.location !== seatingPreference
+    ) {
+      setSelectedResource(null);
+    }
+  }, [seatingPreference]);
+
   const handleBook = async () => {
     if (!startTime) return;
     if (!isAutoDuration && !endTime) return;
@@ -581,7 +605,7 @@ export default function ReservationPage() {
                         onPress={() => setEndTime(time)}
                         style={[
                           styles.timeButton,
-                          isActive && styles.timeButtonActiveEnd,
+                          isActive && styles.timeButtonActive,
                         ]}
                       >
                         <Text
@@ -613,7 +637,7 @@ export default function ReservationPage() {
               </Text>
             </View>
 
-            {resourceTypes.length > 0 ? (
+            {filteredResourceTypes.length > 0 ? (
               <View style={styles.tableConfigBox}>
                 <View style={styles.tableConfigHeader}>
                   <View style={styles.tableConfigIconRow}>
@@ -649,7 +673,7 @@ export default function ReservationPage() {
                 {showResourceSelector && (
                   <View style={styles.tableSelectorContainer}>
                     <View style={styles.tableTypeGrid}>
-                      {resourceTypes.map((rt, idx) => {
+                      {filteredResourceTypes.map((rt, idx) => {
                         const ShapeIcon =
                           rt.shape === "round"
                             ? Circle
@@ -732,13 +756,16 @@ export default function ReservationPage() {
             ) : (
               <View style={styles.noTableConfigBox}>
                 <Text style={styles.noTableConfigText}>
-                  {t("reservation.no_resource_configs")}
+                  {seatingPreference && resourceTypes.length > 0
+                    ? t("reservation.no_resource_configs_for_preference") ||
+                      `No ${seatingPreference} tables configured`
+                    : t("reservation.no_resource_configs")}
                 </Text>
               </View>
             )}
 
             <View style={styles.preferenceRow}>
-              {["indoor", "outdoor"].map((loc) => (
+              {seatingOptions.map((loc) => (
                 <TouchableOpacity
                   key={loc}
                   onPress={() =>
@@ -1059,7 +1086,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   timeButtonActive: { backgroundColor: "#7C8B6D", borderColor: "#7C8B6D" },
-  timeButtonActiveEnd: { backgroundColor: "#2D2D2D", borderColor: "#2D2D2D" },
   timeButtonUnavailable: {
     backgroundColor: "rgba(0,0,0,0.03)",
     borderColor: "rgba(0,0,0,0.05)",

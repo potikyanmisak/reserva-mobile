@@ -394,6 +394,17 @@ async function startServer() {
     addRestaurantCol("default_duration_large_party", "INTEGER DEFAULT 120");
     addRestaurantCol("max_concurrent_bookings_no_tables", "INTEGER DEFAULT 10");
     addRestaurantCol("is_hidden", "INTEGER DEFAULT 0");
+    addRestaurantCol("is_24_hours", "INTEGER DEFAULT 0");
+
+    const scheduleTableInfo = db
+      .prepare("PRAGMA table_info(restaurant_schedules)")
+      .all();
+    const addScheduleCol = (col: string, def: string) => {
+      if (!scheduleTableInfo.some((c: any) => c.name === col)) {
+        db.exec(`ALTER TABLE restaurant_schedules ADD COLUMN ${col} ${def}`);
+      }
+    };
+    addScheduleCol("is_24_hours", "INTEGER DEFAULT 0");
 
     const reservationTableInfo2 = db
       .prepare("PRAGMA table_info(reservations)")
@@ -1110,13 +1121,14 @@ async function startServer() {
         deposit_amount,
         cancellation_policy_hours,
         status,
+        is_24_hours,
       } = req.body;
       if (!logo_url) return res.status(400).json({ error: "Logo is required" });
       const resolvedStatus =
         req.user.role === "admin" ? status || "approved" : "pending";
       try {
         const stmt = db.prepare(
-          `INSERT INTO restaurants (owner_id, name, description, cuisine_type, location, logo_url, open_time, close_time, is_recommended, outdoor_seating, min_price, max_price, phone_number, experience_types, amenities, moods, deposit_amount, cancellation_policy_hours, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO restaurants (owner_id, name, description, cuisine_type, location, logo_url, open_time, close_time, is_recommended, outdoor_seating, min_price, max_price, phone_number, experience_types, amenities, moods, deposit_amount, cancellation_policy_hours, status, is_24_hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         const result = stmt.run(
           req.user.id,
@@ -1138,6 +1150,7 @@ async function startServer() {
           deposit_amount || 0,
           cancellation_policy_hours || 24,
           resolvedStatus,
+          is_24_hours ? 1 : 0,
         );
         db.prepare("UPDATE users SET photo_url = ? WHERE id = ?").run(
           logo_url,
@@ -1778,6 +1791,7 @@ async function startServer() {
         cuisine_type,
         open_time,
         close_time,
+        is_24_hours,
         deposit_amount,
         min_price,
         max_price,
@@ -1804,6 +1818,7 @@ async function startServer() {
             cuisine_type = COALESCE(?, cuisine_type),
             open_time = COALESCE(?, open_time),
             close_time = COALESCE(?, close_time),
+            is_24_hours = COALESCE(?, is_24_hours),
             deposit_amount = COALESCE(?, deposit_amount),
             min_price = COALESCE(?, min_price),
             max_price = COALESCE(?, max_price),
@@ -1823,6 +1838,7 @@ async function startServer() {
           isAdmin ? (cuisine_type ?? null) : null,
           isAdmin ? (open_time ?? null) : null,
           isAdmin ? (close_time ?? null) : null,
+          isAdmin ? (is_24_hours != null ? (is_24_hours ? 1 : 0) : null) : null,
           isAdmin ? (deposit_amount ?? null) : null,
           isAdmin ? (min_price ?? null) : null,
           isAdmin ? (max_price ?? null) : null,
@@ -1947,7 +1963,7 @@ async function startServer() {
             "DELETE FROM restaurant_schedules WHERE restaurant_id = ?",
           );
           const insertStmt = db.prepare(
-            "INSERT INTO restaurant_schedules (restaurant_id, day_of_week, open_time, close_time, is_closed) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO restaurant_schedules (restaurant_id, day_of_week, open_time, close_time, is_closed, is_24_hours) VALUES (?, ?, ?, ?, ?, ?)",
           );
           const transaction = db.transaction((data: any[]) => {
             deleteStmt.run(restaurant.id);
@@ -1958,6 +1974,7 @@ async function startServer() {
                 item.open_time,
                 item.close_time,
                 item.is_closed ? 1 : 0,
+                item.is_24_hours ? 1 : 0,
               );
           });
           transaction(schedule);
@@ -2251,413 +2268,436 @@ async function startServer() {
       res.json({ blocked });
     });
 
-    app.post("/api/reservations", authenticate, (req: any, res) => {
-      const {
-        restaurant_id,
-        resource_id,
-        people_count,
-        date,
-        time,
-        start_time,
-        end_time,
-        seating_preference,
-        table_capacity,
-        table_shape,
-        addon_ids,
-      } = req.body;
+    app.post(
+      "/api/reservations",
+      authenticate,
+      asyncHandler(async (req: any, res: any) => {
+        const {
+          restaurant_id,
+          resource_id,
+          people_count,
+          date,
+          time,
+          start_time,
+          end_time,
+          seating_preference,
+          table_capacity,
+          table_shape,
+          addon_ids,
+        } = req.body;
 
-      const resolvedStart: string = start_time || time;
+        const resolvedStart: string = start_time || time;
 
-      // ── Upfront input validation ────────────────────────────────────────────
-      if (!restaurant_id) {
-        return res.status(400).json({ error: "restaurant_id is required." });
-      }
-      if (!people_count || people_count < 1) {
-        return res
-          .status(400)
-          .json({ error: "A valid people_count is required." });
-      }
-      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        return res
-          .status(400)
-          .json({ error: "A valid date (YYYY-MM-DD) is required." });
-      }
-      if (!resolvedStart || !/^\d{2}:\d{2}$/.test(resolvedStart)) {
-        return res
-          .status(400)
-          .json({ error: "A valid start time (HH:MM) is required." });
-      }
-      if (isNaN(new Date(date).getTime())) {
-        return res.status(400).json({ error: "Invalid date." });
-      }
-      if (isNaN(new Date(`${date}T${resolvedStart}`).getTime())) {
-        return res
-          .status(400)
-          .json({ error: "Invalid date/time combination." });
-      }
-
-      const user: any = db
-        .prepare("SELECT reliability_score FROM users WHERE id = ?")
-        .get(req.user.id);
-      if (user && user.reliability_score < 30) {
-        return res.status(403).json({
-          error:
-            "Your reliability score is too low to make new reservations. Please contact support.",
-        });
-      }
-
-      const restaurant: any = db
-        .prepare("SELECT * FROM restaurants WHERE id = ?")
-        .get(restaurant_id);
-      if (!restaurant)
-        return res.status(404).json({ error: "Restaurant not found" });
-
-      const durationMode =
-        restaurant.duration_mode === "auto" ? "auto" : "manual";
-
-      // In manual mode the customer must supply an end time. In auto mode we
-      // ignore whatever the client sends and compute it ourselves below.
-      if (durationMode === "manual" && !end_time) {
-        return res.status(400).json({
-          error: "Please select an end time for this reservation.",
-        });
-      }
-
-      const bookingDate = new Date(date);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const maxDate = new Date();
-      maxDate.setDate(
-        today.getDate() + (restaurant.advance_booking_days || 30),
-      );
-      if (bookingDate > maxDate)
-        return res.status(400).json({
-          error: `Bookings are only allowed up to ${restaurant.advance_booking_days} days in advance.`,
-        });
-
-      const reservationDateTime = new Date(`${date}T${resolvedStart}`);
-      const now = new Date();
-      const noticeMs =
-        (restaurant.min_booking_notice_hours || 0) * 60 * 60 * 1000;
-      if (reservationDateTime.getTime() - now.getTime() < noticeMs) {
-        return res.status(400).json({
-          error: `Bookings must be made at least ${restaurant.min_booking_notice_hours} hours in advance.`,
-        });
-      }
-
-      const dayOfWeek = bookingDate.getDay();
-      const schedule: any = db
-        .prepare(
-          "SELECT * FROM restaurant_schedules WHERE restaurant_id = ? AND day_of_week = ?",
-        )
-        .get(restaurant_id, dayOfWeek);
-      const checkTimeInRange = (target: string, start: string, end: string) =>
-        target >= start && target <= end;
-      if (schedule) {
-        if (schedule.is_closed)
+        // ── Upfront input validation ────────────────────────────────────────────
+        if (!restaurant_id) {
+          return res.status(400).json({ error: "restaurant_id is required." });
+        }
+        if (!people_count || people_count < 1) {
           return res
             .status(400)
-            .json({ error: "Restaurant is closed on this day." });
-        if (
-          !checkTimeInRange(
-            resolvedStart,
-            schedule.open_time,
-            schedule.close_time,
-          )
-        ) {
-          return res.status(400).json({
-            error: `Opening hours are ${schedule.open_time} - ${schedule.close_time}`,
-          });
+            .json({ error: "A valid people_count is required." });
         }
-      } else {
-        if (
-          !checkTimeInRange(
-            resolvedStart,
-            restaurant.open_time,
-            restaurant.close_time,
-          )
-        ) {
-          return res.status(400).json({
-            error: `Opening hours are ${restaurant.open_time} - ${restaurant.close_time}`,
-          });
+        if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return res
+            .status(400)
+            .json({ error: "A valid date (YYYY-MM-DD) is required." });
         }
-      }
+        if (!resolvedStart || !/^\d{2}:\d{2}$/.test(resolvedStart)) {
+          return res
+            .status(400)
+            .json({ error: "A valid start time (HH:MM) is required." });
+        }
+        if (isNaN(new Date(date).getTime())) {
+          return res.status(400).json({ error: "Invalid date." });
+        }
+        if (isNaN(new Date(`${date}T${resolvedStart}`).getTime())) {
+          return res
+            .status(400)
+            .json({ error: "Invalid date/time combination." });
+        }
 
-      // ── Resource-based booking ──────────────────────────────────────────────
-      if (resource_id) {
-        const resource: any = db
+        const user: any = db
+          .prepare("SELECT reliability_score FROM users WHERE id = ?")
+          .get(req.user.id);
+        if (user && user.reliability_score < 30) {
+          return res.status(403).json({
+            error:
+              "Your reliability score is too low to make new reservations. Please contact support.",
+          });
+        }
+
+        const restaurant: any = db
+          .prepare("SELECT * FROM restaurants WHERE id = ?")
+          .get(restaurant_id);
+        if (!restaurant)
+          return res.status(404).json({ error: "Restaurant not found" });
+
+        const durationMode =
+          restaurant.duration_mode === "auto" ? "auto" : "manual";
+
+        // In manual mode the customer must supply an end time. In auto mode we
+        // ignore whatever the client sends and compute it ourselves below.
+        if (durationMode === "manual" && !end_time) {
+          return res.status(400).json({
+            error: "Please select an end time for this reservation.",
+          });
+        }
+
+        const bookingDate = new Date(date);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const maxDate = new Date();
+        maxDate.setDate(
+          today.getDate() + (restaurant.advance_booking_days || 30),
+        );
+        if (bookingDate > maxDate)
+          return res.status(400).json({
+            error: `Bookings are only allowed up to ${restaurant.advance_booking_days} days in advance.`,
+          });
+
+        const reservationDateTime = new Date(`${date}T${resolvedStart}`);
+        const now = new Date();
+        const noticeMs =
+          (restaurant.min_booking_notice_hours || 0) * 60 * 60 * 1000;
+        if (reservationDateTime.getTime() - now.getTime() < noticeMs) {
+          return res.status(400).json({
+            error: `Bookings must be made at least ${restaurant.min_booking_notice_hours} hours in advance.`,
+          });
+        }
+
+        const dayOfWeek = bookingDate.getDay();
+        const schedule: any = db
           .prepare(
-            "SELECT * FROM resources WHERE id = ? AND restaurant_id = ? AND is_active = 1",
+            "SELECT * FROM restaurant_schedules WHERE restaurant_id = ? AND day_of_week = ?",
           )
-          .get(resource_id, restaurant_id);
-        if (!resource)
-          return res.status(404).json({ error: "Resource not found." });
-
-        let resolvedEnd: string;
-
-        if (durationMode === "auto") {
-          resolvedEnd = calculateEndTime(
-            resolvedStart,
-            people_count,
-            restaurant.max_reservation_duration,
-          );
-          // keep the auto-computed duration inside whatever bounds the resource defines
-          const [sh, sm] = resolvedStart.split(":").map(Number);
-          let [eh, em] = resolvedEnd.split(":").map(Number);
-          let durationMins = eh * 60 + em - (sh * 60 + sm);
-          if (
-            resource.min_booking_minutes &&
-            durationMins < resource.min_booking_minutes
-          )
-            durationMins = resource.min_booking_minutes;
-          if (
-            resource.max_booking_minutes &&
-            durationMins > resource.max_booking_minutes
-          )
-            durationMins = resource.max_booking_minutes;
-          const totalMins = sh * 60 + sm + durationMins;
-          eh = Math.floor(totalMins / 60) % 24;
-          em = totalMins % 60;
-          resolvedEnd = `${eh.toString().padStart(2, "0")}:${em.toString().padStart(2, "0")}`;
-        } else {
-          resolvedEnd = end_time;
-          const [sh, sm] = resolvedStart.split(":").map(Number);
-          const [eh, em] = resolvedEnd.split(":").map(Number);
-          const startMins = sh * 60 + sm;
-          const endMins = eh * 60 + em;
-
-          if (endMins <= startMins)
+          .get(restaurant_id, dayOfWeek);
+        const checkTimeInRange = (target: string, start: string, end: string) =>
+          target >= start && target <= end;
+        if (schedule) {
+          if (schedule.is_closed)
             return res
               .status(400)
-              .json({ error: "End time must be after start time." });
-
-          const durationMins = endMins - startMins;
+              .json({ error: "Restaurant is closed on this day." });
           if (
-            resource.min_booking_minutes &&
-            durationMins < resource.min_booking_minutes
+            !schedule.is_24_hours &&
+            !checkTimeInRange(
+              resolvedStart,
+              schedule.open_time,
+              schedule.close_time,
+            )
           ) {
             return res.status(400).json({
-              error: `Minimum booking duration is ${resource.min_booking_minutes} minutes.`,
+              error: `Opening hours are ${schedule.open_time} - ${schedule.close_time}`,
             });
           }
+        } else {
           if (
-            resource.max_booking_minutes &&
-            durationMins > resource.max_booking_minutes
+            !restaurant.is_24_hours &&
+            !checkTimeInRange(
+              resolvedStart,
+              restaurant.open_time,
+              restaurant.close_time,
+            )
           ) {
             return res.status(400).json({
-              error: `Maximum booking duration is ${resource.max_booking_minutes} minutes.`,
+              error: `Opening hours are ${restaurant.open_time} - ${restaurant.close_time}`,
             });
           }
         }
 
-        const bookResource = db
-          .transaction(() => {
-            const conflict: any = db
-              .prepare(
-                `SELECT COUNT(*) as count FROM reservations
+        // ── Resource-based booking ──────────────────────────────────────────────
+        if (resource_id) {
+          const resource: any = db
+            .prepare(
+              "SELECT * FROM resources WHERE id = ? AND restaurant_id = ? AND is_active = 1",
+            )
+            .get(resource_id, restaurant_id);
+          if (!resource)
+            return res.status(404).json({ error: "Resource not found." });
+
+          let resolvedEnd: string;
+
+          if (durationMode === "auto") {
+            resolvedEnd = calculateEndTime(
+              resolvedStart,
+              people_count,
+              restaurant.max_reservation_duration,
+            );
+            // keep the auto-computed duration inside whatever bounds the resource defines
+            const [sh, sm] = resolvedStart.split(":").map(Number);
+            let [eh, em] = resolvedEnd.split(":").map(Number);
+            let durationMins = eh * 60 + em - (sh * 60 + sm);
+            if (
+              resource.min_booking_minutes &&
+              durationMins < resource.min_booking_minutes
+            )
+              durationMins = resource.min_booking_minutes;
+            if (
+              resource.max_booking_minutes &&
+              durationMins > resource.max_booking_minutes
+            )
+              durationMins = resource.max_booking_minutes;
+            const totalMins = sh * 60 + sm + durationMins;
+            eh = Math.floor(totalMins / 60) % 24;
+            em = totalMins % 60;
+            resolvedEnd = `${eh.toString().padStart(2, "0")}:${em.toString().padStart(2, "0")}`;
+          } else {
+            resolvedEnd = end_time;
+            const [sh, sm] = resolvedStart.split(":").map(Number);
+            const [eh, em] = resolvedEnd.split(":").map(Number);
+            const startMins = sh * 60 + sm;
+            const endMins = eh * 60 + em;
+
+            if (endMins <= startMins)
+              return res
+                .status(400)
+                .json({ error: "End time must be after start time." });
+
+            const durationMins = endMins - startMins;
+            if (
+              resource.min_booking_minutes &&
+              durationMins < resource.min_booking_minutes
+            ) {
+              return res.status(400).json({
+                error: `Minimum booking duration is ${resource.min_booking_minutes} minutes.`,
+              });
+            }
+            if (
+              resource.max_booking_minutes &&
+              durationMins > resource.max_booking_minutes
+            ) {
+              return res.status(400).json({
+                error: `Maximum booking duration is ${resource.max_booking_minutes} minutes.`,
+              });
+            }
+          }
+
+          const bookResource = db
+            .transaction(() => {
+              const conflict: any = db
+                .prepare(
+                  `SELECT COUNT(*) as count FROM reservations
            WHERE resource_id = ? AND date = ? AND status IN ('pending', 'confirmed')
              AND start_time < ? AND end_time > ?`,
-              )
-              .get(resource_id, date, resolvedEnd, resolvedStart);
+                )
+                .get(resource_id, date, resolvedEnd, resolvedStart);
 
-            if (conflict.count > 0) {
-              return { conflict: true };
-            }
+              if (conflict.count > 0) {
+                return { conflict: true };
+              }
 
-            const result = db
-              .prepare(
-                `INSERT INTO reservations
+              const result = db
+                .prepare(
+                  `INSERT INTO reservations
             (restaurant_id, resource_id, customer_id, people_count,
              date, time, start_time, end_time, seating_preference)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              )
-              .run(
-                restaurant_id,
-                resource_id,
-                req.user.id,
-                people_count,
-                date,
-                resolvedStart,
-                resolvedStart,
-                resolvedEnd,
-                seating_preference,
-              );
+                )
+                .run(
+                  restaurant_id,
+                  resource_id,
+                  req.user.id,
+                  people_count,
+                  date,
+                  resolvedStart,
+                  resolvedStart,
+                  resolvedEnd,
+                  seating_preference,
+                );
 
-            return { conflict: false, result };
-          })
-          .immediate();
+              return { conflict: false, result };
+            })
+            .immediate();
 
-        const booking = withRetry(() => bookResource());
+          const booking = withRetry(() => bookResource());
 
-        if (booking.conflict) {
-          return res.status(409).json({
-            error: "This resource is already booked for that time range.",
-            allowWaitlist: true,
+          if (booking.conflict) {
+            return res.status(409).json({
+              error: "This resource is already booked for that time range.",
+              allowWaitlist: true,
+            });
+          }
+
+          const result = booking.result;
+
+          if (addon_ids?.length) {
+            const insertAddon = db.prepare(
+              "INSERT INTO reservation_addons (reservation_id, addon_id) VALUES (?, ?)",
+            );
+            for (const addonId of addon_ids)
+              insertAddon.run(result.lastInsertRowid, addonId);
+          }
+
+          const restaurantInfo = db
+            .prepare(
+              `SELECT res.name, u.email FROM restaurants res JOIN users u ON res.owner_id = u.id WHERE res.id = ?`,
+            )
+            .get(restaurant_id) as any;
+
+          try {
+            if (restaurantInfo)
+              sendEmail(
+                restaurantInfo.email,
+                "New Reservation Request!",
+                `<h1>New Reservation</h1><p>You have a new request for ${restaurantInfo.name} on ${date} at ${resolvedStart}–${resolvedEnd} for ${people_count} people.</p>`,
+              ).catch(console.error);
+
+            scheduleNotifications(
+              req.user.id,
+              Number(result.lastInsertRowid),
+              restaurantInfo?.name || "the restaurant",
+              date,
+              resolvedStart,
+            );
+          } catch (sideEffectErr) {
+            console.error(
+              "[Reserva] Post-booking side effect failed:",
+              sideEffectErr,
+            );
+          }
+
+          return res.json({
+            id: result.lastInsertRowid,
+            status: "pending",
+            start_time: resolvedStart,
+            end_time: resolvedEnd,
           });
         }
 
-        const result = booking.result;
+        // ── Legacy table-based booking ──────────────────────────────────────────
+        const resolvedEnd: string =
+          durationMode === "auto" || !end_time
+            ? calculateEndTime(
+                resolvedStart,
+                people_count,
+                restaurant.max_reservation_duration,
+              )
+            : end_time;
 
-        if (addon_ids?.length) {
-          const insertAddon = db.prepare(
-            "INSERT INTO reservation_addons (reservation_id, addon_id) VALUES (?, ?)",
+        const restaurantTables = db
+          .prepare(
+            "SELECT * FROM tables WHERE restaurant_id = ? AND is_active = 1",
+          )
+          .all(restaurant_id) as any[];
+        let tableId: number | null = null;
+
+        if (restaurantTables.length > 0) {
+          const occupiedTableIds = db
+            .prepare(
+              `SELECT table_id FROM reservations WHERE restaurant_id = ? AND date = ? AND status IN ('pending', 'confirmed') AND table_id IS NOT NULL AND time < ? AND end_time > ?`,
+            )
+            .all(restaurant_id, date, resolvedEnd, resolvedStart)
+            .map((r: any) => r.table_id);
+          const availableTables = restaurantTables.filter(
+            (t) =>
+              !occupiedTableIds.includes(t.id) && t.capacity >= people_count,
           );
-          for (const addonId of addon_ids)
-            insertAddon.run(result.lastInsertRowid, addonId);
+
+          if (availableTables.length === 0)
+            return res.status(409).json({
+              error: "No tables available for this time slot.",
+              allowWaitlist: true,
+            });
+
+          if (table_capacity || seating_preference || table_shape) {
+            const specificMatch = availableTables.filter(
+              (t) =>
+                (!table_capacity || t.capacity === table_capacity) &&
+                (!seating_preference || t.location === seating_preference) &&
+                (!table_shape || t.shape === table_shape),
+            );
+            if (specificMatch.length > 0) {
+              tableId = specificMatch[0].id;
+            } else {
+              const capacityMatch = availableTables.filter(
+                (t) =>
+                  (!table_capacity || t.capacity === table_capacity) &&
+                  (!table_shape || t.shape === table_shape),
+              );
+              if (capacityMatch.length > 0 && seating_preference) {
+                return res.status(409).json({
+                  error: `Selected table type is fully booked. Alternatives available in other areas.`,
+                  alternativeLocation:
+                    seating_preference === "indoor" ? "outdoor" : "indoor",
+                  allowWaitlist: true,
+                });
+              }
+              return res.status(409).json({
+                error: "Selected table type is fully booked.",
+                allowWaitlist: true,
+              });
+            }
+          } else {
+            availableTables.sort((a, b) => a.capacity - b.capacity);
+            tableId = availableTables[0].id;
+          }
+        } else {
+          const overlapping = db
+            .prepare(
+              `SELECT COUNT(*) as count FROM reservations WHERE restaurant_id = ? AND date = ? AND status IN ('pending', 'confirmed') AND time < ? AND end_time > ?`,
+            )
+            .get(restaurant_id, date, resolvedEnd, resolvedStart) as any;
+          if (
+            overlapping.count >=
+            (restaurant.max_concurrent_bookings_no_tables || 10)
+          )
+            return res.status(409).json({
+              error: "No tables available for this time slot.",
+              allowWaitlist: true,
+            });
         }
+
+        const result = db
+          .prepare(
+            "INSERT INTO reservations (restaurant_id, customer_id, people_count, date, time, start_time, end_time, table_id, seating_preference) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            restaurant_id,
+            req.user.id,
+            people_count,
+            date,
+            resolvedStart,
+            resolvedStart,
+            resolvedEnd,
+            tableId,
+            seating_preference,
+          );
 
         const restaurantInfo = db
           .prepare(
             `SELECT res.name, u.email FROM restaurants res JOIN users u ON res.owner_id = u.id WHERE res.id = ?`,
           )
           .get(restaurant_id) as any;
-        if (restaurantInfo)
-          sendEmail(
-            restaurantInfo.email,
-            "New Reservation Request!",
-            `<h1>New Reservation</h1><p>You have a new request for ${restaurantInfo.name} on ${date} at ${resolvedStart}–${resolvedEnd} for ${people_count} people.</p>`,
-          ).catch(console.error);
 
-        scheduleNotifications(
-          req.user.id,
-          Number(result.lastInsertRowid),
-          restaurantInfo?.name || "the restaurant",
-          date,
-          resolvedStart,
-        );
+        try {
+          if (restaurantInfo)
+            sendEmail(
+              restaurantInfo.email,
+              "New Reservation Request!",
+              `<h1>New Reservation</h1><p>You have a new request for ${restaurantInfo.name} on ${date} at ${resolvedStart} for ${people_count} people.</p>`,
+            ).catch(console.error);
+
+          scheduleNotifications(
+            req.user.id,
+            Number(result.lastInsertRowid),
+            restaurantInfo?.name || "the restaurant",
+            date,
+            resolvedStart,
+          );
+        } catch (sideEffectErr) {
+          console.error(
+            "[Reserva] Post-booking side effect failed:",
+            sideEffectErr,
+          );
+        }
 
         return res.json({
           id: result.lastInsertRowid,
           status: "pending",
-          start_time: resolvedStart,
           end_time: resolvedEnd,
         });
-      }
-
-      // ── Legacy table-based booking ──────────────────────────────────────────
-      const resolvedEnd: string =
-        durationMode === "auto" || !end_time
-          ? calculateEndTime(
-              resolvedStart,
-              people_count,
-              restaurant.max_reservation_duration,
-            )
-          : end_time;
-
-      const restaurantTables = db
-        .prepare(
-          "SELECT * FROM tables WHERE restaurant_id = ? AND is_active = 1",
-        )
-        .all(restaurant_id) as any[];
-      let tableId: number | null = null;
-
-      if (restaurantTables.length > 0) {
-        const occupiedTableIds = db
-          .prepare(
-            `SELECT table_id FROM reservations WHERE restaurant_id = ? AND date = ? AND status IN ('pending', 'confirmed') AND table_id IS NOT NULL AND time < ? AND end_time > ?`,
-          )
-          .all(restaurant_id, date, resolvedEnd, resolvedStart)
-          .map((r: any) => r.table_id);
-        const availableTables = restaurantTables.filter(
-          (t) => !occupiedTableIds.includes(t.id) && t.capacity >= people_count,
-        );
-
-        if (availableTables.length === 0)
-          return res.status(409).json({
-            error: "No tables available for this time slot.",
-            allowWaitlist: true,
-          });
-
-        if (table_capacity || seating_preference || table_shape) {
-          const specificMatch = availableTables.filter(
-            (t) =>
-              (!table_capacity || t.capacity === table_capacity) &&
-              (!seating_preference || t.location === seating_preference) &&
-              (!table_shape || t.shape === table_shape),
-          );
-          if (specificMatch.length > 0) {
-            tableId = specificMatch[0].id;
-          } else {
-            const capacityMatch = availableTables.filter(
-              (t) =>
-                (!table_capacity || t.capacity === table_capacity) &&
-                (!table_shape || t.shape === table_shape),
-            );
-            if (capacityMatch.length > 0 && seating_preference) {
-              return res.status(409).json({
-                error: `Selected table type is fully booked. Alternatives available in other areas.`,
-                alternativeLocation:
-                  seating_preference === "indoor" ? "outdoor" : "indoor",
-                allowWaitlist: true,
-              });
-            }
-            return res.status(409).json({
-              error: "Selected table type is fully booked.",
-              allowWaitlist: true,
-            });
-          }
-        } else {
-          availableTables.sort((a, b) => a.capacity - b.capacity);
-          tableId = availableTables[0].id;
-        }
-      } else {
-        const overlapping = db
-          .prepare(
-            `SELECT COUNT(*) as count FROM reservations WHERE restaurant_id = ? AND date = ? AND status IN ('pending', 'confirmed') AND time < ? AND end_time > ?`,
-          )
-          .get(restaurant_id, date, resolvedEnd, resolvedStart) as any;
-        if (
-          overlapping.count >=
-          (restaurant.max_concurrent_bookings_no_tables || 10)
-        )
-          return res.status(409).json({
-            error: "No tables available for this time slot.",
-            allowWaitlist: true,
-          });
-      }
-
-      const result = db
-        .prepare(
-          "INSERT INTO reservations (restaurant_id, customer_id, people_count, date, time, start_time, end_time, table_id, seating_preference) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .run(
-          restaurant_id,
-          req.user.id,
-          people_count,
-          date,
-          resolvedStart,
-          resolvedStart,
-          resolvedEnd,
-          tableId,
-          seating_preference,
-        );
-
-      const restaurantInfo = db
-        .prepare(
-          `SELECT res.name, u.email FROM restaurants res JOIN users u ON res.owner_id = u.id WHERE res.id = ?`,
-        )
-        .get(restaurant_id) as any;
-      if (restaurantInfo)
-        sendEmail(
-          restaurantInfo.email,
-          "New Reservation Request!",
-          `<h1>New Reservation</h1><p>You have a new request for ${restaurantInfo.name} on ${date} at ${resolvedStart} for ${people_count} people.</p>`,
-        ).catch(console.error);
-
-      scheduleNotifications(
-        req.user.id,
-        Number(result.lastInsertRowid),
-        restaurantInfo?.name || "the restaurant",
-        date,
-        resolvedStart,
-      );
-
-      return res.json({
-        id: result.lastInsertRowid,
-        status: "pending",
-        end_time: resolvedEnd,
-      });
-    });
+      }),
+    );
 
     app.post(
       "/api/reservations/:id/cancel",
