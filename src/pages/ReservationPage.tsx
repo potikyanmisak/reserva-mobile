@@ -90,6 +90,10 @@ export default function ReservationPage() {
   const [isWaitlistSuccess, setIsWaitlistSuccess] = useState(false);
   const [waitlistTime, setWaitlistTime] = useState<number | null>(null);
 
+  // Whether this restaurant auto-calculates reservation duration (owner
+  // setting) or requires the customer to pick an explicit end time.
+  const isAutoDuration = restaurant?.duration_mode === "auto";
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -177,11 +181,29 @@ export default function ReservationPage() {
   const openTime = schedule ? schedule.open_time : restaurant?.open_time;
   const closeTime = schedule ? schedule.close_time : restaurant?.close_time;
 
-  // All start-time slots
+  // All start-time slots. generateTimeSlots only knows the day's open/close
+  // hours — it has no concept of "now". So when the selected date is today,
+  // we filter out slots that are already in the past or fall inside the
+  // restaurant's min_booking_notice_hours window (the same rule the backend
+  // enforces in POST /api/reservations), so the UI never offers a slot the
+  // server would reject anyway.
+  const isSelectedDateToday =
+    selectedDate === format(startOfToday(), "yyyy-MM-dd");
   const startTimeSlots =
-    restaurant && isOpen ? generateTimeSlots(openTime, closeTime) : [];
+    restaurant && isOpen
+      ? generateTimeSlots(openTime, closeTime).filter((slot) => {
+          if (!isSelectedDateToday) return true;
+          const [h, m] = slot.split(":").map(Number);
+          const slotDateTime = new Date();
+          slotDateTime.setHours(h, m, 0, 0);
+          const noticeMs =
+            (restaurant.min_booking_notice_hours || 0) * 60 * 60 * 1000;
+          return slotDateTime.getTime() - Date.now() >= noticeMs;
+        })
+      : [];
 
   // End-time slots: only slots after startTime, filtered against blocked ranges
+  // (only relevant in manual duration mode — auto mode never shows these)
   const endTimeSlots: string[] = startTime
     ? generateTimeSlots(openTime, closeTime)
         .filter((t) => t > startTime!)
@@ -202,8 +224,13 @@ export default function ReservationPage() {
     );
   }
 
+  const canSubmit = isAutoDuration
+    ? Boolean(startTime)
+    : Boolean(startTime && endTime);
+
   const handleBook = async () => {
-    if (!startTime || !endTime) return;
+    if (!startTime) return;
+    if (!isAutoDuration && !endTime) return;
     setIsSubmitting(true);
 
     const token = await AsyncStorage.getItem("reserva_token");
@@ -222,7 +249,9 @@ export default function ReservationPage() {
           date: selectedDate,
           time: startTime, // kept for backward compat
           start_time: startTime,
-          end_time: endTime,
+          // In auto mode the backend computes end_time itself — don't send
+          // a stale/irrelevant value.
+          end_time: isAutoDuration ? null : endTime,
           seating_preference: seatingPreference,
           // Legacy fallbacks
           table_capacity: selectedResource?.capacity ?? null,
@@ -457,7 +486,9 @@ export default function ReservationPage() {
               <Clock size={18} color="#7C8B6D" />
               <Text style={styles.sectionTitleText}>
                 {startTime
-                  ? `${t("reservation.from_label")} ${startTime}`
+                  ? isAutoDuration
+                    ? `${t("reservation.pick_time")}: ${startTime}`
+                    : `${t("reservation.from_label")} ${startTime}`
                   : t("reservation.pick_time")}
               </Text>
             </View>
@@ -502,10 +533,20 @@ export default function ReservationPage() {
                 )}
               </View>
             )}
+            {/* Auto-duration notice — no end time to pick, restaurant sets it */}
+            {isAutoDuration && startTime && (
+              <View style={styles.durationBadge}>
+                <Clock size={12} color="#7C8B6D" />
+                <Text style={styles.durationText}>
+                  {t("reservation.auto_duration_notice") ||
+                    "Duration is set automatically by the restaurant"}
+                </Text>
+              </View>
+            )}
           </View>
 
-          {/* End Time Picker — shown only after start time is selected */}
-          {startTime && (
+          {/* End Time Picker — manual duration mode only, shown after start time is selected */}
+          {!isAutoDuration && startTime && (
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <ArrowRight size={18} color="#7C8B6D" />
@@ -733,7 +774,7 @@ export default function ReservationPage() {
         ]}
       >
         {/* Summary strip */}
-        {startTime && endTime && (
+        {startTime && !isAutoDuration && endTime && (
           <View style={styles.summaryStrip}>
             <Text style={styles.summaryText}>{startTime}</Text>
             <ArrowRight size={14} color="rgba(45,45,45,0.4)" />
@@ -751,13 +792,22 @@ export default function ReservationPage() {
             </Text>
           </View>
         )}
+        {startTime && isAutoDuration && (
+          <View style={styles.summaryStrip}>
+            <Text style={styles.summaryText}>{startTime}</Text>
+            <Text style={styles.summaryDot}>·</Text>
+            <Text style={styles.summaryText}>
+              {peopleCount}{" "}
+              {peopleCount === 1
+                ? t("dashboard.person")
+                : t("dashboard.people")}
+            </Text>
+          </View>
+        )}
         <TouchableOpacity
           onPress={handleBook}
-          disabled={!startTime || !endTime || isSubmitting}
-          style={[
-            styles.bookButton,
-            (!startTime || !endTime) && styles.bookButtonDisabled,
-          ]}
+          disabled={!canSubmit || isSubmitting}
+          style={[styles.bookButton, !canSubmit && styles.bookButtonDisabled]}
         >
           {isSubmitting ? (
             <ActivityIndicator color="white" />
