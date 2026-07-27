@@ -7,6 +7,18 @@ import jwt from "jsonwebtoken";
 import fs from "fs";
 import { Resend } from "resend";
 import { buildVerificationEmail } from "./emailTemplates";
+import { GoogleGenAI, Type } from "@google/genai";
+
+const ISSUE_CATEGORIES = [
+  "Food Quality",
+  "Service",
+  "Waiting Time",
+  "Cleanliness",
+  "Atmosphere",
+  "Pricing",
+  "Staff Behavior",
+  "Reservation Experience",
+];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2017,6 +2029,55 @@ async function startServer() {
         res.status(500).json({ error: "Failed to toggle like" });
       }
     });
+
+    app.post(
+      "/api/reviews/analyze",
+      authenticate,
+      asyncHandler(async (req: any, res: any) => {
+        const { text } = req.body;
+        const fallback = { sentiment: "Positive", categories: [] };
+
+        if (!text || !text.trim() || text.trim().length < 5) {
+          return res.json(fallback);
+        }
+
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+          const response = await ai.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: `Analyze this restaurant review. Detect the overall sentiment (Positive, Negative, or Neutral) and identify which of these categories are mentioned: ${ISSUE_CATEGORIES.join(", ")}. Only return categories that are explicitly mentioned or strongly implied. Review: "${text}"`,
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  sentiment: {
+                    type: Type.STRING,
+                    description: "Positive, Negative, or Neutral",
+                  },
+                  categories: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description:
+                      "List of detected categories from the provided list",
+                  },
+                },
+                required: ["sentiment", "categories"],
+              },
+            },
+          });
+
+          if (response.text) {
+            const result = JSON.parse(response.text);
+            return res.json(result);
+          }
+          return res.json(fallback);
+        } catch (err) {
+          console.error("[Reserva] Gemini review analysis failed:", err);
+          return res.json(fallback);
+        }
+      }),
+    );
 
     app.post("/api/reviews", authenticate, (req: any, res) => {
       const {

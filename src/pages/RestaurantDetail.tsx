@@ -33,7 +33,6 @@ import {
   CalendarDays,
   ChevronRight,
 } from "lucide-react-native";
-import { GoogleGenAI, Type } from "@google/genai";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { WebView } from "react-native-webview";
 import { getApiUrl } from "../lib/api";
@@ -208,37 +207,20 @@ export default function RestaurantDetail() {
     if (!text.trim() || text.length < 5) return;
     setAnalyzingReview(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Analyze this restaurant review. Detect the overall sentiment (Positive, Negative, or Neutral) and identify which of these categories are mentioned: ${ISSUE_CATEGORIES.join(", ")}. Only return categories that are explicitly mentioned or strongly implied. Review: "${text}"`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              sentiment: {
-                type: Type.STRING,
-                description: "Positive, Negative, or Neutral",
-              },
-              categories: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description:
-                  "List of detected categories from the provided list",
-              },
-            },
-            required: ["sentiment", "categories"],
-          },
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl("/api/reviews/analyze"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
         },
+        body: JSON.stringify({ text }),
       });
-      if (response.text) {
-        const result = JSON.parse(response.text);
-        if (result.sentiment !== "Positive" || result.categories.length > 0) {
-          setAiAnalysis(result);
-        } else {
-          await performSubmitReview(text, reviewRating, "Positive", []);
-        }
+      const result = await res.json();
+      if (result.sentiment !== "Positive" || result.categories?.length > 0) {
+        setAiAnalysis(result);
+      } else {
+        await performSubmitReview(text, reviewRating, "Positive", []);
       }
     } catch (err) {
       console.error("AI Analysis failed:", err);
