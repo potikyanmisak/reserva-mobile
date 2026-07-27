@@ -2472,44 +2472,42 @@ async function startServer() {
             }
           }
 
-          const bookResource = db
-            .transaction(() => {
-              const conflict: any = db
-                .prepare(
-                  `SELECT COUNT(*) as count FROM reservations
-           WHERE resource_id = ? AND date = ? AND status IN ('pending', 'confirmed')
-             AND start_time < ? AND end_time > ?`,
-                )
-                .get(resource_id, date, resolvedEnd, resolvedStart);
+          const bookResourceTxn = db.transaction(() => {
+            const conflict: any = db
+              .prepare(
+                `SELECT COUNT(*) as count FROM reservations
+         WHERE resource_id = ? AND date = ? AND status IN ('pending', 'confirmed')
+           AND start_time < ? AND end_time > ?`,
+              )
+              .get(resource_id, date, resolvedEnd, resolvedStart);
 
-              if (conflict.count > 0) {
-                return { conflict: true };
-              }
+            if (conflict.count > 0) {
+              return { conflict: true };
+            }
 
-              const result = db
-                .prepare(
-                  `INSERT INTO reservations
-            (restaurant_id, resource_id, customer_id, people_count,
-             date, time, start_time, end_time, seating_preference)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                )
-                .run(
-                  restaurant_id,
-                  resource_id,
-                  req.user.id,
-                  people_count,
-                  date,
-                  resolvedStart,
-                  resolvedStart,
-                  resolvedEnd,
-                  seating_preference,
-                );
+            const result = db
+              .prepare(
+                `INSERT INTO reservations
+          (restaurant_id, resource_id, customer_id, people_count,
+           date, time, start_time, end_time, seating_preference)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                restaurant_id,
+                resource_id,
+                req.user.id,
+                people_count,
+                date,
+                resolvedStart,
+                resolvedStart,
+                resolvedEnd,
+                seating_preference,
+              );
 
-              return { conflict: false, result };
-            })
-            .immediate();
+            return { conflict: false, result };
+          });
 
-          const booking = withRetry(() => bookResource());
+          const booking = withRetry(() => bookResourceTxn.immediate());
 
           if (booking.conflict) {
             return res.status(409).json({
