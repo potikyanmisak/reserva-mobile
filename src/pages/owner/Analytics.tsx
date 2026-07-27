@@ -12,8 +12,8 @@ import { TrendingUp, ThumbsUp, Star, AlertCircle } from "lucide-react-native";
 import { useLanguage } from "../../lib/LanguageContext";
 import { theme } from "../../theme";
 import { getApiUrl } from "../../lib/api";
-import DonutChart from "../../components/Donutchart";
-import PinchZoomLineChart from "../../components/Pinchzoomlinechart";
+import DonutChart from "../../components/DonutChart";
+import PinchZoomLineChart from "../../components/PinchZoomLineChart";
 
 const CATEGORY_COLORS: Record<string, string> = {
   "Food Quality": "#00A3FF",
