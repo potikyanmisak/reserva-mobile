@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -34,6 +34,7 @@ export default function LanguageSelector({
   onClose,
 }: LanguageSelectorProps) {
   const { language, setLanguage, t } = useLanguage();
+  const [changing, setChanging] = useState(false);
   const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(height)).current;
   const opacity = useRef(new Animated.Value(0)).current;
@@ -151,9 +152,13 @@ export default function LanguageSelector({
             return (
               <TouchableOpacity
                 key={lang.code}
-                onPress={() => {
-                  setLanguage(lang.code as any);
-                  setTimeout(onClose, 200);
+                disabled={changing}
+                onPress={async () => {
+                  if (changing) return;
+                  setChanging(true);
+                  await setLanguage(lang.code as any);
+                  setChanging(false);
+                  onClose();
                 }}
                 style={[
                   styles.optionButton,
