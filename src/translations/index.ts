@@ -123,6 +123,7 @@ export const en = {
     open: "Open",
     closed: "Closed",
     closes_label: "Closes",
+    opens_label: "Opens",
     away_meters: "m away",
     away_km: "km away",
     reservations_label: "Reservations",
@@ -586,6 +587,7 @@ export const am = {
     open: "Բաց է",
     closed: "Փակ է",
     closes_label: "Փակվում է",
+    opens_label: "Բացվում է",
     away_meters: "մ հեռավորության վրա",
     away_km: "կմ հեռավորության վրա",
     reservations_label: "Ամրագրումներ",
@@ -1050,6 +1052,7 @@ export const ru = {
     open: "Открыто",
     closed: "Закрыто",
     closes_label: "Закрывается",
+    opens_label: "Открывается",
     away_meters: "м от вас",
     away_km: "км от вас",
     reservations_label: "Бронирование",
@@ -1389,4 +1392,3 @@ export const ru = {
     sushi: "Суши",
   },
 };
- 

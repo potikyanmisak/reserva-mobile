@@ -20,6 +20,48 @@ const ISSUE_CATEGORIES = [
   "Reservation Experience",
 ];
 
+// Safely reads a JSON-array DB column back into a real array.
+// Defensively unwraps legacy rows that got double-JSON-encoded
+// (e.g. column holds the string '["Romantic"]' instead of an array),
+// which otherwise makes callers spread individual characters.
+function parseJsonArray(value: unknown): string[] {
+  let parsed: any = value;
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed || "[]");
+    } catch {
+      return [];
+    }
+  }
+  if (typeof parsed === "string") {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+// Safely encodes a value for storage in a JSON-array DB column.
+// Accepts either a real array or an already-JSON-encoded string from
+// the client, and always stores a single layer of JSON encoding.
+function toJsonArrayColumn(value: unknown): string | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) return JSON.stringify(value);
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed)
+        ? JSON.stringify(parsed)
+        : JSON.stringify([]);
+    } catch {
+      return JSON.stringify([]);
+    }
+  }
+  return JSON.stringify([]);
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.resolve(__dirname, "dist");
@@ -1156,9 +1198,9 @@ async function startServer() {
           min_price || 0,
           max_price || 0,
           phone_number || null,
-          JSON.stringify(experience_types || []),
-          JSON.stringify(amenities || []),
-          JSON.stringify(moods || []),
+          toJsonArrayColumn(experience_types) ?? "[]",
+          toJsonArrayColumn(amenities) ?? "[]",
+          toJsonArrayColumn(moods) ?? "[]",
           deposit_amount || 0,
           cancellation_policy_hours || 24,
           resolvedStatus,
@@ -1219,27 +1261,9 @@ async function startServer() {
             .all(r.id);
           return {
             ...r,
-            experience_types: (() => {
-              try {
-                return JSON.parse(r.experience_types || "[]");
-              } catch {
-                return [];
-              }
-            })(),
-            amenities: (() => {
-              try {
-                return JSON.parse(r.amenities || "[]");
-              } catch {
-                return [];
-              }
-            })(),
-            moods: (() => {
-              try {
-                return JSON.parse(r.moods || "[]");
-              } catch {
-                return [];
-              }
-            })(),
+            experience_types: parseJsonArray(r.experience_types),
+            amenities: parseJsonArray(r.amenities),
+            moods: parseJsonArray(r.moods),
             outdoor_seating: r.outdoor_seating === 1,
             images,
           };
@@ -1271,27 +1295,9 @@ async function startServer() {
           .all()
           .map((r: any) => ({
             ...r,
-            experience_types: (() => {
-              try {
-                return JSON.parse(r.experience_types || "[]");
-              } catch {
-                return [];
-              }
-            })(),
-            amenities: (() => {
-              try {
-                return JSON.parse(r.amenities || "[]");
-              } catch {
-                return [];
-              }
-            })(),
-            moods: (() => {
-              try {
-                return JSON.parse(r.moods || "[]");
-              } catch {
-                return [];
-              }
-            })(),
+            experience_types: parseJsonArray(r.experience_types),
+            amenities: parseJsonArray(r.amenities),
+            moods: parseJsonArray(r.moods),
             is_hidden: r.is_hidden === 1,
           }));
         res.json(approved);
@@ -1734,27 +1740,9 @@ async function startServer() {
         ...restaurant,
         latitude: restaurant.lat,
         longitude: restaurant.lng,
-        experience_types: (() => {
-          try {
-            return JSON.parse(restaurant.experience_types || "[]");
-          } catch {
-            return [];
-          }
-        })(),
-        amenities: (() => {
-          try {
-            return JSON.parse(restaurant.amenities || "[]");
-          } catch {
-            return [];
-          }
-        })(),
-        moods: (() => {
-          try {
-            return JSON.parse(restaurant.moods || "[]");
-          } catch {
-            return [];
-          }
-        })(),
+        experience_types: parseJsonArray(restaurant.experience_types),
+        amenities: parseJsonArray(restaurant.amenities),
+        moods: parseJsonArray(restaurant.moods),
         images,
         menuImages,
         reviews,
@@ -1842,9 +1830,9 @@ async function startServer() {
           location ?? null,
           latitude ?? null,
           longitude ?? null,
-          experience_types ? JSON.stringify(experience_types) : null,
-          amenities ? JSON.stringify(amenities) : null,
-          moods ? JSON.stringify(moods) : null,
+          toJsonArrayColumn(experience_types),
+          toJsonArrayColumn(amenities),
+          toJsonArrayColumn(moods),
           isAdmin ? (name ?? null) : null,
           isAdmin ? (description ?? null) : null,
           isAdmin ? (cuisine_type ?? null) : null,
@@ -1942,9 +1930,9 @@ async function startServer() {
             cancellation_policy_hours,
             min_price || 0,
             max_price || 0,
-            experience_types ? JSON.stringify(experience_types) : null,
-            amenities ? JSON.stringify(amenities) : null,
-            moods ? JSON.stringify(moods) : null,
+            toJsonArrayColumn(experience_types),
+            toJsonArrayColumn(amenities),
+            toJsonArrayColumn(moods),
             duration_mode === "auto" || duration_mode === "manual"
               ? duration_mode
               : null,
