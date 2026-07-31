@@ -1660,9 +1660,13 @@ async function startServer() {
     );
 
     app.get("/api/restaurants/nearest", (req, res) => {
-      const { lat, lng } = req.query;
+      const { lat, lng, radius } = req.query;
       if (!lat || !lng)
         return res.status(400).json({ error: "lat/lng required" });
+      // FIX: was hardcoded to 1.5km, which silently capped results below the
+      // app's 0–10km distance slider. Accept an optional radius (km), defaulting
+      // to 10 so a single fetch covers the slider's full range.
+      const radiusKm = radius ? Number(radius) : 10;
       const all = db
         .prepare(
           `
@@ -1699,7 +1703,7 @@ async function startServer() {
           ...r,
           dist_km: haversine(Number(lat), Number(lng), r.lat, r.lng),
         }))
-        .filter((r) => r.dist_km <= 1.5)
+        .filter((r) => r.dist_km <= radiusKm)
         .sort((a, b) => a.dist_km - b.dist_km);
       res.json(nearby);
     });

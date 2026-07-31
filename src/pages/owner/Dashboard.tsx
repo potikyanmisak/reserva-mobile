@@ -1,2717 +1,2687 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
-  Image,
   TextInput,
+  Image,
   StyleSheet,
-  Alert,
-  ActivityIndicator,
   Dimensions,
+  Switch,
+  Pressable,
+  Platform,
+  Alert,
+  Animated,
+  PanResponder,
+  Modal,
+  LayoutAnimation,
+  UIManager,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  Search,
+  MapPin,
+  Star,
+  Bell,
+  Filter,
+  Diamond,
+  Calendar,
+  Clock,
+  X,
+  Check,
+  AlertCircle,
+} from "lucide-react-native";
 import { useNavigation } from "@react-navigation/native";
 import { useAuth } from "../../lib/AuthContext";
-import { theme } from "../../theme";
-import {
-  Plus,
-  Eye,
-  Star,
-  MapPin,
-  Image as ImageIcon,
-  Check,
-  X,
-  RefreshCw,
-  Circle,
-  Square,
-  RectangleHorizontal,
-  ChefHat,
-  LogOut,
-  Phone,
-  Gamepad2,
-  Mic2,
-  Sofa,
-  Pencil,
-  Save,
-  Wallet,
-} from "lucide-react-native";
 import { useLanguage } from "../../lib/LanguageContext";
-import * as ImagePicker from "expo-image-picker";
-import { WebView } from "react-native-webview";
+import { theme } from "../../theme";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApiUrl } from "../../lib/api";
-import { EXPERIENCE_GROUPS, AMENITIES, MOODS } from "../../lib/filterOptions";
+import { useSettings } from "../../lib/SettingsContext";
+import { RefreshControl } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
+import * as Location from "expo-location";
+import {
+  CUISINES,
+  PRICE_RANGES,
+  RATINGS,
+  EXPERIENCE_GROUPS,
+  AMENITIES,
+  MOODS,
+} from "../../lib/filterOptions";
 
-const { width } = Dimensions.get("window");
+const { width, height } = Dimensions.get("window");
 
-const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY ?? "";
-
-function isValidPhone(phone: string): boolean {
-  return /^\+?[\d\s\-().]{7,20}$/.test(phone.trim());
+// FIX: enable LayoutAnimation on Android (no-op on iOS, which supports it natively)
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-function MultiSelectPills({
-  options,
-  selected,
-  onToggle,
+function getPriceSymbol(min_price?: number, max_price?: number): string {
+  const avg = ((min_price ?? 0) + (max_price ?? 0)) / 2;
+  if (!avg) return "$$";
+  if (avg < 5000) return "$";
+  if (avg < 15000) return "$$";
+  if (avg < 30000) return "$$$";
+  return "$$$$";
+}
+
+// ── Fisher-Yates shuffle ──────────────────────────────────────────────────────
+function shuffleArray<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+const C = {
+  bg: "#F5F0EB",
+  white: "#FFFFFF",
+  olive: "#5A5A40",
+  oliveDeep: "#4A4A34",
+  oliveLight: "#7C8B6D",
+  text: "#1A1A1A",
+  textSub: "#8A8A8A",
+  border: "rgba(0,0,0,0.07)",
+  cardBg: "#E8E0D8",
+};
+
+// NOTE: `label` values here are translation KEYS (not display text).
+// They are resolved with t() at render time so the chip labels translate.
+const CATEGORIES = [
+  { id: "all", label: "categories.all" },
+  { id: "dining", label: "categories.dining" },
+  { id: "hookah", label: "categories.hookah" },
+  { id: "cafe", label: "categories.cafe" },
+  { id: "sushi", label: "categories.sushi" },
+];
+
+// ── Beautiful custom alert ────────────────────────────────────────────────────
+function CustomAlert({
+  visible,
+  title,
+  message,
+  icon,
+  iconColor,
+  onClose,
+  actions,
+  okLabel,
 }: {
-  options: string[];
-  selected: string[];
-  onToggle: (val: string) => void;
+  visible: boolean;
+  title: string;
+  message: string;
+  icon?: React.ReactNode;
+  iconColor?: string;
+  onClose: () => void;
+  actions?: { label: string; onPress: () => void; destructive?: boolean }[];
+  okLabel?: string;
 }) {
-  return (
-    <View style={styles.pillGrid}>
-      {options.map((opt) => {
-        const active = selected.includes(opt);
-        return (
-          <TouchableOpacity
-            key={opt}
-            onPress={() => onToggle(opt)}
-            style={[styles.pill, active && styles.pillActive]}
-          >
-            {active && (
-              <Check
-                size={10}
-                color="white"
-                strokeWidth={3}
-                style={{ marginRight: 4 }}
-              />
-            )}
-            <Text style={[styles.pillText, active && styles.pillTextActive]}>
-              {opt}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
-  );
-}
-
-function SubLabel({ label }: { label: string }) {
-  return <Text style={styles.subLabel}>{label}</Text>;
-}
-
-function RestaurantMap({ location }: { location: string }) {
-  const encodedLocation = encodeURIComponent(location || "");
-  const mapHtml = `<!DOCTYPE html><html><head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>body,html{height:100%;margin:0;padding:0;overflow:hidden;}</style>
-  </head><body>
-    <iframe width="100%" height="100%" style="border:0;" loading="lazy"
-      src="https://maps.google.com/maps?q=${encodedLocation}&t=&z=15&ie=UTF8&iwloc=&output=embed">
-    </iframe>
-  </body></html>`;
-  return (
-    <View style={styles.mapContainer}>
-      <WebView
-        originWhitelist={["*"]}
-        source={{ html: mapHtml }}
-        style={styles.webViewMap}
-        javaScriptEnabled
-        domStorageEnabled
-        startInLoadingState
-        renderLoading={() => (
-          <View
-            style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
-          >
-            <ActivityIndicator color="#7C8B6D" />
-          </View>
-        )}
-      />
-    </View>
-  );
-}
-
-function EditableLocationMap({
-  lat,
-  lng,
-  onLocationChange,
-}: {
-  lat: number;
-  lng: number;
-  onLocationChange: (lat: number, lng: number) => void;
-}) {
-  const mapHtml = `<!DOCTYPE html><html><head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>body,html{height:100%;margin:0;padding:0;}#map{height:100%;}</style>
-  </head><body>
-    <div id="map"></div>
-    <script>
-      var initLat = ${lat};
-      var initLng = ${lng};
-      var map, marker;
-
-      function sendPos(lat, lng) {
-        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'markerMoved', lat: lat, lng: lng }));
-      }
-
-      function initMap() {
-        var latLng = { lat: initLat, lng: initLng };
-        map = new google.maps.Map(document.getElementById('map'), {
-          center: latLng,
-          zoom: 15,
-          disableDefaultUI: true,
-          zoomControl: true,
-        });
-        marker = new google.maps.Marker({
-          position: latLng,
-          map: map,
-          draggable: true,
-        });
-        marker.addListener('dragend', function(e) {
-          sendPos(e.latLng.lat(), e.latLng.lng());
-        });
-        map.addListener('click', function(e) {
-          marker.setPosition(e.latLng);
-          sendPos(e.latLng.lat(), e.latLng.lng());
-        });
-      }
-    </script>
-    <script src="https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&callback=initMap" async defer></script>
-  </body></html>`;
-
-  return (
-    <View style={styles.editableMapContainer}>
-      <WebView
-        originWhitelist={["*"]}
-        source={{ html: mapHtml }}
-        style={styles.editableMapWebView}
-        javaScriptEnabled
-        domStorageEnabled
-        scrollEnabled={false}
-        onMessage={(event) => {
-          try {
-            const data = JSON.parse(event.nativeEvent.data);
-            if (data.type === "markerMoved") {
-              onLocationChange(data.lat, data.lng);
-            }
-          } catch {}
-        }}
-      />
-    </View>
-  );
-}
-
-function ResourceShapeIcon({ resource }: { resource: any }) {
-  if (resource.resource_type === "room")
-    return <Sofa size={14} color="#7C8B6D" />;
-  if (resource.resource_type === "station")
-    return <Gamepad2 size={14} color="#7C8B6D" />;
-  if (resource.resource_type === "booth")
-    return <Mic2 size={14} color="#7C8B6D" />;
-  if (resource.shape === "round") return <Circle size={14} color="#7C8B6D" />;
-  if (resource.shape === "rectangular")
-    return <RectangleHorizontal size={14} color="#7C8B6D" />;
-  return <Square size={14} color="#7C8B6D" />;
-}
-
-function useToast() {
-  const [toast, setToast] = useState<{
-    message: string;
-    type: "success" | "error";
-  } | null>(null);
-  const show = (message: string, type: "success" | "error" = "success") => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
-  };
-  return { toast, show };
-}
-
-export default function OwnerDashboard() {
-  const insets = useSafeAreaInsets();
-  const { user, token, logout } = useAuth();
-  const navigation = useNavigation<any>();
-  const { t } = useLanguage();
-  const { toast, show: showToast } = useToast();
-
-  const RESOURCE_TYPES = [
-    { id: "table", label: t("owner_dashboard.resource_type_table") },
-    { id: "room", label: t("owner_dashboard.resource_type_room") },
-    { id: "booth", label: t("owner_dashboard.resource_type_booth") },
-    { id: "station", label: t("owner_dashboard.resource_type_station") },
-    { id: "zone", label: t("owner_dashboard.resource_type_zone") },
-  ];
-
-  const [restaurant, setRestaurant] = useState<any>(null);
-  const [resources, setResources] = useState<any[]>([]);
-  const [pendingReservations, setPendingReservations] = useState<any[]>([]);
-  const [showResourceForm, setShowResourceForm] = useState(false);
-  const [newResource, setNewResource] = useState({
-    name: "",
-    resource_type: "table",
-    capacity: 2,
-    location: "indoor",
-    quantity: 1,
-    shape: "square",
-    min_booking_minutes: 30,
-    max_booking_minutes: null as number | null,
-    price_per_hour: 0,
-    features: [] as string[],
-  });
-  const [loading, setLoading] = useState(false);
-  const [uploadingGallery, setUploadingGallery] = useState(false);
-  const [uploadingMenu, setUploadingMenu] = useState(false);
-  const TAB_BAR_HEIGHT = 60;
-
-  const [editingPhone, setEditingPhone] = useState(false);
-  const [primaryPhone, setPrimaryPhone] = useState("");
-  const [secondaryPhone, setSecondaryPhone] = useState("");
-  const [showSecondaryPhone, setShowSecondaryPhone] = useState(false);
-  const [savingPhone, setSavingPhone] = useState(false);
-
-  const [editingLocation, setEditingLocation] = useState(false);
-  const [locationAddress, setLocationAddress] = useState("");
-  const [locationLat, setLocationLat] = useState<number | null>(null);
-  const [locationLng, setLocationLng] = useState<number | null>(null);
-  const [savingLocation, setSavingLocation] = useState(false);
-
-  const [editingFilters, setEditingFilters] = useState(false);
-  const [filterExperienceTypes, setFilterExperienceTypes] = useState<string[]>(
-    [],
-  );
-  const [filterAmenities, setFilterAmenities] = useState<string[]>([]);
-  const [filterMoods, setFilterMoods] = useState<string[]>([]);
-  const [savingFilters, setSavingFilters] = useState(false);
-
-  const [editingPriceRange, setEditingPriceRange] = useState(false);
-  const [minPrice, setMinPrice] = useState<number | null>(null);
-  const [maxPrice, setMaxPrice] = useState<number | null>(null);
-  const [savingPriceRange, setSavingPriceRange] = useState(false);
+  const scale = useRef(new Animated.Value(0.85)).current;
+  const opacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    if (restaurant) {
-      setPrimaryPhone(restaurant.phone_number || "");
-      setSecondaryPhone(restaurant.secondary_phone || "");
-      setShowSecondaryPhone(!!restaurant.secondary_phone);
-      setLocationAddress(restaurant.location || "");
-      setLocationLat(
-        restaurant.latitude ? parseFloat(restaurant.latitude) : null,
-      );
-      setLocationLng(
-        restaurant.longitude ? parseFloat(restaurant.longitude) : null,
-      );
-      setFilterExperienceTypes(restaurant.experience_types || []);
-      setFilterAmenities(restaurant.amenities || []);
-      setFilterMoods(restaurant.moods || []);
-      setMinPrice(
-        restaurant.min_price !== undefined && restaurant.min_price !== null
-          ? Number(restaurant.min_price)
-          : null,
-      );
-      setMaxPrice(
-        restaurant.max_price !== undefined && restaurant.max_price !== null
-          ? Number(restaurant.max_price)
-          : null,
-      );
-    }
-  }, [restaurant]);
-
-  const handleSavePhone = async () => {
-    if (!restaurant?.id) {
-      showToast(t("owner_dashboard.restaurant_not_loaded"), "error");
-      return;
-    }
-    if (!isValidPhone(primaryPhone)) {
-      showToast(t("owner_dashboard.invalid_primary_phone"), "error");
-      return;
-    }
-    if (secondaryPhone && !isValidPhone(secondaryPhone)) {
-      showToast(t("owner_dashboard.invalid_secondary_phone"), "error");
-      return;
-    }
-    setSavingPhone(true);
-    try {
-      const res = await fetch(getApiUrl(`/api/restaurants/${restaurant.id}`), {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          phone_number: primaryPhone,
-          secondary_phone: secondaryPhone || null,
+    if (visible) {
+      Animated.parallel([
+        Animated.spring(scale, {
+          toValue: 1,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 10,
         }),
-      });
-      if (res.ok) {
-        showToast(t("owner_dashboard.phone_updated"));
-        setEditingPhone(false);
-        fetchRestaurant();
-      } else {
-        const errText = await res.text();
-        showToast(
-          `${t("owner_dashboard.phone_update_failed")} (${res.status})`,
-          "error",
-        );
-        console.error("Phone save error:", res.status, errText);
-      }
-    } catch (e) {
-      showToast(t("owner_dashboard.network_error"), "error");
-      console.error(e);
-    } finally {
-      setSavingPhone(false);
-    }
-  };
-
-  const handleCancelPhone = () => {
-    setPrimaryPhone(restaurant?.phone_number || "");
-    setSecondaryPhone(restaurant?.secondary_phone || "");
-    setShowSecondaryPhone(!!restaurant?.secondary_phone);
-    setEditingPhone(false);
-  };
-
-  const handleDeleteSecondaryPhone = () => {
-    setSecondaryPhone("");
-    setShowSecondaryPhone(false);
-  };
-
-  const handleSaveLocation = async () => {
-    if (!restaurant?.id) {
-      showToast(t("owner_dashboard.restaurant_not_loaded"), "error");
-      return;
-    }
-    if (!locationAddress.trim()) {
-      showToast(t("owner_dashboard.address_empty"), "error");
-      return;
-    }
-    setSavingLocation(true);
-    try {
-      const body: any = { location: locationAddress };
-      if (locationLat !== null) body.latitude = locationLat;
-      if (locationLng !== null) body.longitude = locationLng;
-      const res = await fetch(getApiUrl(`/api/restaurants/${restaurant.id}`), {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(body),
-      });
-      if (res.ok) {
-        showToast(t("owner_dashboard.location_updated"));
-        setEditingLocation(false);
-        fetchRestaurant();
-      } else {
-        const errText = await res.text();
-        showToast(
-          `${t("owner_dashboard.location_update_failed")} (${res.status})`,
-          "error",
-        );
-        console.error("Location save error:", res.status, errText);
-      }
-    } catch (e) {
-      showToast(t("owner_dashboard.network_error"), "error");
-      console.error(e);
-    } finally {
-      setSavingLocation(false);
-    }
-  };
-
-  const handleCancelLocation = () => {
-    setLocationAddress(restaurant?.location || "");
-    setLocationLat(
-      restaurant?.latitude ? parseFloat(restaurant.latitude) : null,
-    );
-    setLocationLng(
-      restaurant?.longitude ? parseFloat(restaurant.longitude) : null,
-    );
-    setEditingLocation(false);
-  };
-
-  const handleSaveFilters = async () => {
-    if (!restaurant?.id) {
-      showToast(t("owner_dashboard.restaurant_not_loaded"), "error");
-      return;
-    }
-    setSavingFilters(true);
-    try {
-      const res = await fetch(getApiUrl(`/api/restaurants/${restaurant.id}`), {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          experience_types: filterExperienceTypes,
-          amenities: filterAmenities,
-          moods: filterMoods,
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
         }),
+      ]).start();
+    } else {
+      scale.setValue(0.85);
+      opacity.setValue(0);
+    }
+  }, [visible]);
+
+  if (!visible) return null;
+
+  return (
+    <Modal
+      transparent
+      animationType="none"
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <View style={alertStyles.overlay}>
+        <Animated.View
+          style={[alertStyles.sheet, { transform: [{ scale }], opacity }]}
+        >
+          {icon && (
+            <View
+              style={[
+                alertStyles.iconWrap,
+                { backgroundColor: `${iconColor || C.olive}18` },
+              ]}
+            >
+              {icon}
+            </View>
+          )}
+          <Text style={alertStyles.title}>{title}</Text>
+          <Text style={alertStyles.message}>{message}</Text>
+          <View style={alertStyles.actions}>
+            {actions && actions.length > 0 ? (
+              actions.map((a, i) => (
+                <TouchableOpacity
+                  key={i}
+                  onPress={() => {
+                    a.onPress();
+                    onClose();
+                  }}
+                  style={[
+                    alertStyles.actionBtn,
+                    a.destructive && alertStyles.actionBtnDestructive,
+                    i === 0 &&
+                      actions.length > 1 &&
+                      alertStyles.actionBtnSecondary,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      alertStyles.actionText,
+                      a.destructive && alertStyles.actionTextDestructive,
+                      i === 0 &&
+                        actions.length > 1 &&
+                        alertStyles.actionTextSecondary,
+                    ]}
+                  >
+                    {a.label}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            ) : (
+              <TouchableOpacity onPress={onClose} style={alertStyles.actionBtn}>
+                <Text style={alertStyles.actionText}>{okLabel || "OK"}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+const alertStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 32,
+  },
+  sheet: {
+    backgroundColor: C.white,
+    borderRadius: 28,
+    padding: 28,
+    width: "100%",
+    maxWidth: 340,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.18,
+    shadowRadius: 32,
+    elevation: 20,
+  },
+  iconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: C.text,
+    textAlign: "center",
+    marginBottom: 8,
+    fontFamily: "Georgia",
+  },
+  message: {
+    fontSize: 14,
+    color: C.textSub,
+    textAlign: "center",
+    lineHeight: 20,
+    marginBottom: 24,
+  },
+  actions: { flexDirection: "row", gap: 10, width: "100%" },
+  actionBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 16,
+    alignItems: "center",
+    backgroundColor: C.olive,
+  },
+  actionBtnSecondary: {
+    backgroundColor: "rgba(0,0,0,0.05)",
+  },
+  actionBtnDestructive: {
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+  },
+  actionText: { fontSize: 13, fontWeight: "800", color: "white" },
+  actionTextSecondary: { color: C.textSub },
+  actionTextDestructive: { color: "#ef4444" },
+});
+
+export default function CustomerDashboard() {
+  const [refreshing, setRefreshing] = useState(false);
+  const { distanceUnit } = useSettings();
+
+  const insets = useSafeAreaInsets();
+  const navigation = useNavigation<any>();
+  const { user, login } = useAuth();
+  const { t } = useLanguage();
+
+  const [restaurants, setRestaurants] = useState<any[]>([]);
+  const [recommended, setRecommended] = useState<any[]>([]);
+  const [reservations, setReservations] = useState<any[]>([]);
+  const [waitlistStatus, setWaitlistStatus] = useState<any>(null);
+  const [nearestMode, setNearestMode] = useState(false);
+  const [nearestLoading, setNearestLoading] = useState(false);
+  // FIX: distance radius for "Closest to you", 0–10km, defaults to 1.5km every time it's turned on
+  const [nearestRadiusKm, setNearestRadiusKm] = useState(1.5);
+  // FIX: monotonically increasing request id — lets an in-flight (stale) toggle
+  // detect it's been superseded and bail out instead of overwriting newer state.
+  // Replaces the old boolean lock, which is what let the button feel stuck/laggy.
+  const nearestRequestIdRef = useRef(0);
+  // FIX: ignores a duplicate fire from the Switch + its wrapping TouchableOpacity
+  // both triggering on a single physical tap.
+  const lastToggleAtRef = useRef(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showNotifications, setShowNotifications] = useState(false);
+  // FIX: showFilters now controls *mounting*; closing is animated from within
+  // FilterModal itself, which calls onClose after the slide-out finishes.
+  const [showFilters, setShowFilters] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [activeCategory, setActiveCategory] = useState("all");
+
+  // FIX: Custom alert state
+  const [customAlert, setCustomAlert] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    icon?: React.ReactNode;
+    iconColor?: string;
+    actions?: { label: string; onPress: () => void; destructive?: boolean }[];
+  }>({ visible: false, title: "", message: "" });
+
+  const showAlert = (config: Omit<typeof customAlert, "visible">) =>
+    setCustomAlert({ ...config, visible: true });
+  const hideAlert = () => setCustomAlert((p) => ({ ...p, visible: false }));
+
+  const [activeFilters, setActiveFilters] = useState<ActiveFilters>({
+    cuisines: [],
+    rating: null,
+    priceRange: [],
+    openNow: false,
+    experiences: [],
+    amenities: [],
+    moods: [],
+  });
+
+  // FIX: random 5 discover restaurants, reshuffled on each fetch
+  const [discoverRestaurants, setDiscoverRestaurants] = useState<any[]>([]);
+
+  const fetchMyReservations = useCallback(async () => {
+    if (!user) return;
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl("/api/my-reservations"), {
+        headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
-        showToast(t("owner_dashboard.filters_saved"));
-        setEditingFilters(false);
-        fetchRestaurant();
-      } else {
-        const errText = await res.text();
-        showToast(
-          `${t("owner_dashboard.filters_save_failed")} (${res.status})`,
-          "error",
-        );
-        console.error("Filters save error:", res.status, errText);
-      }
-    } catch (e) {
-      showToast(t("owner_dashboard.network_error"), "error");
-      console.error(e);
-    } finally {
-      setSavingFilters(false);
-    }
-  };
-
-  const handleCancelFilters = () => {
-    setFilterExperienceTypes(restaurant?.experience_types || []);
-    setFilterAmenities(restaurant?.amenities || []);
-    setFilterMoods(restaurant?.moods || []);
-    setEditingFilters(false);
-  };
-
-  const handleSavePriceRange = async () => {
-    if (!restaurant?.id) {
-      showToast(t("owner_dashboard.restaurant_not_loaded"), "error");
-      return;
-    }
-    if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
-      showToast(t("owner_dashboard.invalid_price_range"), "error");
-      return;
-    }
-    setSavingPriceRange(true);
-    try {
-      const res = await fetch(getApiUrl(`/api/restaurants/${restaurant.id}`), {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          min_price: minPrice ?? 0,
-          max_price: maxPrice ?? 0,
-        }),
-      });
-      if (res.ok) {
-        showToast(t("owner_dashboard.price_range_updated"));
-        setEditingPriceRange(false);
-        fetchRestaurant();
-      } else {
-        const errText = await res.text();
-        showToast(
-          `${t("owner_dashboard.price_range_update_failed")} (${res.status})`,
-          "error",
-        );
-        console.error("Price range save error:", res.status, errText);
-      }
-    } catch (e) {
-      showToast(t("owner_dashboard.network_error"), "error");
-      console.error(e);
-    } finally {
-      setSavingPriceRange(false);
-    }
-  };
-
-  const handleCancelPriceRange = () => {
-    setMinPrice(
-      restaurant?.min_price !== undefined && restaurant?.min_price !== null
-        ? Number(restaurant.min_price)
-        : null,
-    );
-    setMaxPrice(
-      restaurant?.max_price !== undefined && restaurant?.max_price !== null
-        ? Number(restaurant.max_price)
-        : null,
-    );
-    setEditingPriceRange(false);
-  };
-
-  const pickImage = async (type: "logo" | "gallery") => {
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 0.5,
-      base64: true,
-    });
-    if (!result.canceled && result.assets[0].base64) {
-      const base64 = `data:image/jpeg;base64,${result.assets[0].base64}`;
-      if (type === "logo") {
-        handleLogoUpload(base64);
-      } else {
-        handleImageUpload(base64);
-      }
-    }
-  };
-
-  const handleLogoUpload = async (base64: string) => {
-    if (!restaurant) return;
-    setLoading(true);
-    try {
-      const res = await fetch(
-        getApiUrl(`/api/restaurants/${restaurant.id}/logo`),
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ logo_url: base64 }),
-        },
-      );
-      if (res.ok) fetchRestaurant();
+      const data = await res.json();
+      setReservations(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+      console.error("Customer Reservation Fetch Error:", err);
     }
-  };
+  }, [user]);
 
-  const handleImageUpload = async (base64: string) => {
-    if (!restaurant) return;
-    setUploadingGallery(true);
-    const tempId = Date.now();
-    setRestaurant((prev: any) => ({
-      ...prev,
-      images: [...(prev.images || []), { id: tempId, url: base64, temp: true }],
-    }));
-    try {
-      const res = await fetch(
-        getApiUrl(`/api/restaurants/${restaurant.id}/images`),
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ url: base64 }),
-        },
-      );
-      if (res.ok) fetchRestaurant();
-      else
-        setRestaurant((prev: any) => ({
-          ...prev,
-          images: (prev.images || []).filter((img: any) => img.id !== tempId),
-        }));
-    } catch (err) {
-      console.error(err);
-      setRestaurant((prev: any) => ({
-        ...prev,
-        images: (prev.images || []).filter((img: any) => img.id !== tempId),
-      }));
-    } finally {
-      setUploadingGallery(false);
-    }
-  };
-
-  const pickMenuImage = async () => {
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 0.5,
-      base64: true,
-    });
-    if (!result.canceled && result.assets[0].base64) {
-      handleMenuImageUpload(
-        `data:image/jpeg;base64,${result.assets[0].base64}`,
-      );
-    }
-  };
-
-  const handleMenuImageUpload = async (base64: string) => {
-    if (!restaurant) return;
-    setUploadingMenu(true);
-    const tempId = Date.now();
-    setRestaurant((prev: any) => ({
-      ...prev,
-      menuImages: [
-        ...(prev.menuImages || []),
-        { id: tempId, url: base64, temp: true },
-      ],
-    }));
-    try {
-      const res = await fetch(
-        getApiUrl(`/api/restaurants/${restaurant.id}/menu-images`),
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ url: base64 }),
-        },
-      );
-      if (res.ok) fetchRestaurant();
-      else
-        setRestaurant((prev: any) => ({
-          ...prev,
-          menuImages: (prev.menuImages || []).filter(
-            (img: any) => img.id !== tempId,
-          ),
-        }));
-    } catch (err) {
-      console.error(err);
-      setRestaurant((prev: any) => ({
-        ...prev,
-        menuImages: (prev.menuImages || []).filter(
-          (img: any) => img.id !== tempId,
-        ),
-      }));
-    } finally {
-      setUploadingMenu(false);
-    }
-  };
-
-  const handleDeleteImage = async (imageId: number) => {
-    Alert.alert(
-      t("owner_dashboard.confirm_delete_title"),
-      t("owner_dashboard.confirm_delete_image"),
-      [
-        { text: t("common.cancel"), style: "cancel" },
-        {
-          text: t("common.delete"),
-          style: "destructive",
-          onPress: async () => {
-            setRestaurant((prev: any) => ({
-              ...prev,
-              images: (prev.images || []).filter(
-                (img: any) => img.id !== imageId,
-              ),
-              menuImages: (prev.menuImages || []).filter(
-                (img: any) => img.id !== imageId,
-              ),
-            }));
-            try {
-              await fetch(getApiUrl(`/api/restaurant-images/${imageId}`), {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${token}` },
-              });
-            } catch (err) {
-              console.error(err);
-              fetchRestaurant();
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  const fetchRestaurant = () => {
-    fetch(getApiUrl("/api/restaurants"), {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+  const fetchRestaurants = useCallback(() => {
+    fetch(getApiUrl("/api/restaurants"))
       .then((res) => res.json())
       .then((data) => {
-        const list = data.all ?? data ?? [];
-        const owned = list.find(
-          (r: any) => Number(r.owner_id) === Number(user?.id),
-        );
-        if (owned) {
-          fetch(getApiUrl(`/api/restaurants/${owned.id}`), {
+        const all = data.all || [];
+        setRestaurants(all);
+        setRecommended(data.recommended || []);
+        // FIX: pick 5 random restaurants for discover
+        setDiscoverRestaurants(shuffleArray(all).slice(0, 5));
+      })
+      .catch((err) => console.error("Fetch Restaurants Error:", err));
+  }, []);
+
+  useEffect(() => {
+    if (!nearestMode) fetchRestaurants();
+  }, [nearestMode]);
+
+  const fetchWaitlistStatus = useCallback(async () => {
+    if (!user) return;
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl("/api/my-waitlists"), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setWaitlistStatus(data);
+    } catch (err) {
+      console.error("Waitlist fetch error:", err);
+    }
+  }, [user]);
+
+  const fetchNotifications = useCallback(async () => {
+    if (!user) return;
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl("/api/notifications"), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : [];
+      setNotifications(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Notifications fetch error:", err);
+    }
+  }, [user]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await fetchMyReservations();
+      await fetchWaitlistStatus();
+      await fetchNotifications();
+      if (!nearestMode) fetchRestaurants();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [
+    fetchMyReservations,
+    fetchWaitlistStatus,
+    fetchNotifications,
+    fetchRestaurants,
+  ]);
+
+  useEffect(() => {
+    if (user) {
+      fetchMyReservations();
+      fetchWaitlistStatus();
+      fetchNotifications();
+      const interval = setInterval(() => {
+        fetchMyReservations();
+        fetchWaitlistStatus();
+        fetchNotifications();
+      }, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [user, fetchMyReservations, fetchWaitlistStatus, fetchNotifications]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (user) {
+        AsyncStorage.getItem("reserva_token").then((token) => {
+          fetch(getApiUrl("/api/me"), {
             headers: { Authorization: `Bearer ${token}` },
           })
             .then((res) => res.json())
-            .then((fullData) => {
-              setRestaurant(fullData);
-              fetchResources(owned.id);
-              fetchPendingReservations();
+            .then((data) => {
+              if (data.reliability_score !== undefined) {
+                login(token || "", {
+                  ...user,
+                  reliability_score: data.reliability_score,
+                });
+              }
             });
-        }
-      })
-      .catch(() => {});
-  };
+        });
+      }
+    }, [user, login]),
+  );
 
-  const fetchResources = (restaurantId: number) => {
-    fetch(getApiUrl(`/api/restaurants/${restaurantId}/resources`), {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("resources endpoint not found");
-        return res.json();
-      })
-      .then((data) => setResources(data))
-      .catch(() => {
-        fetch(getApiUrl(`/api/restaurants/${restaurantId}/tables`), {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-          .then((res) => res.json())
-          .then((data) =>
-            setResources(
-              data.map((t: any) => ({ ...t, resource_type: "table" })),
+  // FIX: Completely rewritten toggleNearest.
+  // - The switch/label flip INSTANTLY (optimistic UI) instead of waiting on GPS + network,
+  //   which is what made the button feel laggy/unresponsive before.
+  // - A cached location is only used if it's actually precise; otherwise we properly wait
+  //   for a real GPS fix (generous timeout) instead of silently computing distances from
+  //   a location that could be kilometers off.
+  // - Every async checkpoint compares against nearestRequestIdRef so a stale response from
+  //   an earlier tap can never overwrite state from a newer one (the old race-condition bug).
+  const toggleNearest = useCallback(async () => {
+    // FIX: swallow a duplicate fire from the Switch and its wrapping TouchableOpacity
+    // triggering on the same physical tap.
+    const now = Date.now();
+    if (now - lastToggleAtRef.current < 400) return;
+    lastToggleAtRef.current = now;
+
+    const requestId = ++nearestRequestIdRef.current;
+    const turningOn = !nearestMode;
+    const isStale = () => requestId !== nearestRequestIdRef.current;
+
+    // Instant feedback — the switch responds the moment you tap it.
+    setNearestMode(turningOn);
+    setNearestLoading(true);
+    if (turningOn) {
+      setSearchQuery("");
+      setNearestRadiusKm(1.5);
+    }
+
+    try {
+      if (turningOn) {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (isStale()) return;
+        if (status !== "granted") {
+          setNearestMode(false);
+          showAlert({
+            title: t("alerts.location_needed_title"),
+            message: t("alerts.location_needed_msg"),
+            icon: <MapPin size={28} color="#f59e0b" />,
+            iconColor: "#f59e0b",
+            actions: [{ label: t("alerts.got_it"), onPress: () => {} }],
+          });
+          return;
+        }
+
+        // FIX: the old fallback accepted a cached location up to 5km off, and
+        // if a fresh fix didn't land within 6s it just kept using that coarse
+        // one — so restaurants could vanish at small radii even though they
+        // were genuinely close, because the distance was computed from the
+        // wrong point. Now: only trust a cached fix if it's actually precise,
+        // and otherwise properly wait for a real one (with a longer window)
+        // instead of settling for a bad guess.
+        const fetchNearbyByCoords = async (coords: {
+          latitude: number;
+          longitude: number;
+        }) => {
+          const res = await fetch(
+            getApiUrl(
+              `/api/restaurants/nearest?lat=${coords.latitude}&lng=${coords.longitude}&radius=10`,
             ),
           );
-      });
-  };
+          const data = await res.json();
+          if (isStale()) return;
+          setRestaurants(Array.isArray(data) ? data : []);
+        };
 
-  const fetchPendingReservations = () => {
-    if (!token) return;
-    fetch(getApiUrl("/api/owner/reservations"), {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Unauthorized");
-        return res.json();
-      })
-      .then((data) => {
-        if (Array.isArray(data))
-          setPendingReservations(
-            data.filter((r: any) => r.status === "pending"),
-          );
-      })
-      .catch((err) => console.error("Reservation Fetch Error:", err));
-  };
-
-  useEffect(() => {
-    fetchRestaurant();
-    const interval = setInterval(fetchPendingReservations, 10000);
-    return () => clearInterval(interval);
-  }, [user]);
-
-  const handleAddResources = async () => {
-    if (!restaurant) return;
-    setLoading(true);
-    try {
-      const res = await fetch(
-        getApiUrl(`/api/restaurants/${restaurant.id}/resources`),
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ ...newResource }),
-        },
-      );
-      if (res.ok) {
-        fetchResources(restaurant.id);
-        setShowResourceForm(false);
-        setNewResource({
-          name: "",
-          resource_type: "table",
-          capacity: 2,
-          location: "indoor",
-          quantity: 1,
-          shape: "square",
-          min_booking_minutes: 30,
-          max_booking_minutes: null,
-          price_per_hour: 0,
-          features: [],
-        });
-      } else {
-        const legacyRes = await fetch(
-          getApiUrl(`/api/restaurants/${restaurant.id}/tables`),
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              capacity: newResource.capacity,
-              location: newResource.location,
-              quantity: newResource.quantity,
-              shape: newResource.shape,
-            }),
-          },
-        );
-        if (legacyRes.ok) {
-          fetchResources(restaurant.id);
-          setShowResourceForm(false);
+        let cachedCoords: { latitude: number; longitude: number } | null = null;
+        try {
+          const cached = await Location.getLastKnownPositionAsync({
+            maxAge: 5 * 60 * 1000,
+            requiredAccuracy: 200,
+          });
+          if (cached) cachedCoords = cached.coords;
+        } catch {
+          // no precise-enough cached fix — fine, we wait for a fresh one below
         }
+        if (isStale()) return;
+
+        // Kick off an accurate fix in parallel with showing whatever we have.
+        const freshFixPromise = Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        }).catch(() => null);
+
+        if (cachedCoords) {
+          // Precise cached fix — show results instantly. They'll be silently
+          // corrected below the moment the accurate fix comes back anyway.
+          await fetchNearbyByCoords(cachedCoords);
+          if (isStale()) return;
+          setNearestLoading(false);
+        }
+
+        // Give the accurate fix a generous window — only give up with an
+        // error if we truly have nothing to show at all.
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<null>((resolve) => {
+          timeoutId = setTimeout(
+            () => resolve(null),
+            cachedCoords ? 10000 : 15000,
+          );
+        });
+        const fresh = await Promise.race([freshFixPromise, timeout]);
+        if (timeoutId) clearTimeout(timeoutId);
+        if (isStale()) return;
+
+        if (fresh) {
+          await fetchNearbyByCoords(fresh.coords);
+        } else if (!cachedCoords) {
+          throw new Error("no_location");
+        }
+      } else {
+        const res = await fetch(getApiUrl("/api/restaurants"));
+        const data = await res.json();
+        if (isStale()) return;
+        const all = data.all || [];
+        setRestaurants(all);
+        setDiscoverRestaurants(shuffleArray(all).slice(0, 5));
       }
     } catch (err) {
-      console.error(err);
+      console.error("Nearest toggle error:", err);
+      if (!isStale()) {
+        setNearestMode(false);
+        showAlert({
+          title: t("alerts.error_title"),
+          message: t("alerts.error_msg"),
+          icon: <AlertCircle size={28} color="#ef4444" />,
+          iconColor: "#ef4444",
+          actions: [{ label: t("alerts.ok"), onPress: () => {} }],
+        });
+      }
     } finally {
-      setLoading(false);
+      if (!isStale()) setNearestLoading(false);
     }
-  };
+  }, [nearestMode, t]);
 
-  const handleDeleteResource = async (resourceId: number) => {
-    Alert.alert(
-      t("owner_dashboard.confirm_title"),
-      t("owner_dashboard.confirm_remove_resource"),
-      [
-        { text: t("common.cancel"), style: "cancel" },
+  const activeReservations = reservations.filter((r) => {
+    if (r.status !== "pending" && r.status !== "confirmed") return false;
+    const visitDateTime = new Date(`${r.date}T${r.time}`);
+    const oneHourAfterVisit = new Date(
+      visitDateTime.getTime() + 60 * 60 * 1000,
+    );
+    return new Date() < oneHourAfterVisit;
+  });
+
+  const visitedRestaurants = Array.from(
+    new Set(
+      reservations
+        .filter((r) => {
+          if (r.status !== "confirmed") return false;
+          const visitDateTime = new Date(`${r.date}T${r.time}`);
+          const oneHourAfterVisit = new Date(
+            visitDateTime.getTime() + 60 * 60 * 1000,
+          );
+          return new Date() >= oneHourAfterVisit;
+        })
+        .map((r) => r.restaurant_id),
+    ),
+  )
+    .map((id) => {
+      const res = reservations.find((r) => r.restaurant_id === id);
+      if (!res) return null;
+      const fullRestaurant = restaurants.find((r) => r.id === id);
+      return {
+        id: res.restaurant_id,
+        name: res.restaurant_name,
+        logo_url: res.logo_url,
+        cover_image_url: fullRestaurant?.cover_image_url || null,
+        rating: res.rating || 4.6,
+        location: res.location || "New York",
+        dist_km: res.dist_km || 2.4,
+        date: new Date(res.date).toLocaleDateString(),
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  const handleCancel = async (
+    reservationId: number,
+    status: string,
+    date: string,
+    time: string,
+  ) => {
+    const visitDateTime = new Date(`${date}T${time}`);
+    const hoursUntilVisit =
+      (visitDateTime.getTime() - Date.now()) / (1000 * 60 * 60);
+
+    let warningMessage = t("alerts.cancel_msg_default");
+    if (status === "confirmed") {
+      if (hoursUntilVisit < 2) {
+        warningMessage = t("alerts.cancel_msg_lt2h");
+      } else if (hoursUntilVisit < 24) {
+        warningMessage = t("alerts.cancel_msg_lt24h");
+      } else {
+        warningMessage = t("alerts.cancel_msg_confirmed");
+      }
+    }
+
+    showAlert({
+      title: t("alerts.cancel_reservation_title"),
+      message: warningMessage,
+      icon: <AlertCircle size={28} color="#ef4444" />,
+      iconColor: "#ef4444",
+      actions: [
+        { label: t("alerts.keep_it"), onPress: () => {} },
         {
-          text: t("owner_dashboard.remove"),
-          style: "destructive",
+          label: t("alerts.cancel_reservation_title"),
+          destructive: true,
           onPress: async () => {
-            try {
-              let res = await fetch(getApiUrl(`/api/resources/${resourceId}`), {
-                method: "DELETE",
+            const token = await AsyncStorage.getItem("reserva_token");
+            const res = await fetch(
+              getApiUrl(`/api/reservations/${reservationId}/cancel`),
+              {
+                method: "POST",
                 headers: { Authorization: `Bearer ${token}` },
-              });
-              if (!res.ok)
-                res = await fetch(getApiUrl(`/api/tables/${resourceId}`), {
-                  method: "DELETE",
-                  headers: { Authorization: `Bearer ${token}` },
-                });
-              if (res.ok && restaurant) fetchResources(restaurant.id);
-            } catch (err) {
-              console.error(err);
-            }
+              },
+            );
+            if (res.ok) fetchMyReservations();
           },
         },
       ],
-    );
+    });
   };
 
-  const handleReservationAction = async (
-    id: number,
-    action: "confirm" | "reject",
-  ) => {
-    try {
-      const res = await fetch(getApiUrl(`/api/reservations/${id}/${action}`), {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) fetchPendingReservations();
-    } catch (err) {
-      console.error(err);
-    }
+  // FIX: when "Closest to you" is on, narrow results down to the selected radius
+  // AND sort them nearest-to-farthest. Previously this only filtered — it never
+  // sorted — so restaurants inside the radius appeared in whatever order the
+  // API returned them, not by distance.
+  const nearbyRestaurants = nearestMode
+    ? restaurants
+        .filter((r) => {
+          const d =
+            typeof r.dist_km === "number" ? r.dist_km : parseFloat(r.dist_km);
+          return Number.isNaN(d) ? true : d <= nearestRadiusKm;
+        })
+        .sort((a, b) => {
+          const da =
+            typeof a.dist_km === "number" ? a.dist_km : parseFloat(a.dist_km);
+          const db =
+            typeof b.dist_km === "number" ? b.dist_km : parseFloat(b.dist_km);
+          const aUnknown = Number.isNaN(da);
+          const bUnknown = Number.isNaN(db);
+          // Restaurants with no usable distance sort to the end instead of
+          // interleaving randomly with ones that do have a distance.
+          if (aUnknown && bUnknown) return 0;
+          if (aUnknown) return 1;
+          if (bUnknown) return -1;
+          return da - db;
+        })
+    : restaurants;
+
+  // FIX: Hookah — guard against non-array experience_types
+  const categoryFilteredRestaurants = nearbyRestaurants.filter((r) => {
+    if (activeCategory === "all") return true;
+    const name = (r.name || "").toLowerCase();
+    const cuisine = (r.cuisine_type || "").toLowerCase();
+    const cat = activeCategory.toLowerCase();
+    // FIX: safely coerce experience_types to array
+    const experienceTypes: string[] = Array.isArray(r.experience_types)
+      ? r.experience_types
+      : typeof r.experience_types === "string"
+        ? [r.experience_types]
+        : [];
+    if (cat === "hookah")
+      return (
+        cuisine.includes("hookah") ||
+        name.includes("hookah") ||
+        experienceTypes.some((e: string) => e.toLowerCase().includes("hookah"))
+      );
+    if (cat === "cafe")
+      return (
+        cuisine.includes("cafe") ||
+        name.includes("cafe") ||
+        cuisine.includes("coffee")
+      );
+    if (cat === "sushi")
+      return cuisine.includes("sushi") || name.includes("sushi");
+    if (cat === "dining")
+      return ["fine dining", "steakhouse", "italian", "armenian"].some((c) =>
+        cuisine.includes(c),
+      );
+    return true;
+  });
+
+  const applyFilters = (list: any[]) =>
+    list.filter((r) => {
+      if (
+        searchQuery &&
+        !r.name?.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+        return false;
+      if (
+        activeFilters.cuisines.length > 0 &&
+        !activeFilters.cuisines.includes(r.cuisine_type)
+      )
+        return false;
+      if (activeFilters.rating && (r.rating || 4.0) < activeFilters.rating)
+        return false;
+      if (activeFilters.priceRange.length > 0) {
+        const sym = getPriceSymbol(r.min_price, r.max_price);
+        if (!activeFilters.priceRange.includes(sym)) return false;
+      }
+      if (activeFilters.openNow) {
+        const now = new Date();
+        const cur = now.getHours() * 60 + now.getMinutes();
+        const [oH, oM] = (r.open_time || "09:00").split(":").map(Number);
+        const [cH, cM] = (r.close_time || "22:00").split(":").map(Number);
+        if (cur < oH * 60 + oM || cur > cH * 60 + cM) return false;
+      }
+      const expTypes: string[] = Array.isArray(r.experience_types)
+        ? r.experience_types
+        : typeof r.experience_types === "string"
+          ? [r.experience_types]
+          : [];
+      if (activeFilters.experiences.length > 0) {
+        if (!activeFilters.experiences.some((e) => expTypes.includes(e)))
+          return false;
+      }
+      if (activeFilters.amenities.length > 0) {
+        const am = (Array.isArray(r.amenities) ? r.amenities : []) as string[];
+        if (!activeFilters.amenities.some((a) => am.includes(a))) return false;
+      }
+      if (activeFilters.moods.length > 0) {
+        const mo = (Array.isArray(r.moods) ? r.moods : []) as string[];
+        if (!activeFilters.moods.some((m) => mo.includes(m))) return false;
+      }
+      return true;
+    });
+
+  const displayRestaurants = applyFilters(categoryFilteredRestaurants);
+  // FIX: discover uses its own random-5 list (also filtered)
+  const filteredDiscover = applyFilters(discoverRestaurants);
+
+  const getTimeOfDay = () => {
+    const h = new Date().getHours();
+    if (h < 12) return t("dashboard.good_morning");
+    if (h < 18) return t("dashboard.good_afternoon");
+    return t("dashboard.good_evening");
   };
 
-  if (!restaurant) {
-    return (
-      <View style={styles.centeredContainer}>
-        <ActivityIndicator size="large" color="#7C8B6D" />
-      </View>
-    );
-  }
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const isFiltering =
+    nearestMode ||
+    searchQuery ||
+    activeCategory !== "all" ||
+    activeFilters.cuisines.length > 0 ||
+    activeFilters.rating ||
+    activeFilters.priceRange.length > 0 ||
+    activeFilters.openNow ||
+    activeFilters.experiences.length > 0 ||
+    activeFilters.amenities.length > 0 ||
+    activeFilters.moods.length > 0;
 
   return (
-    <View style={styles.container}>
-      {toast && (
-        <View
-          style={[
-            styles.toastContainer,
-            { top: insets.top + 16 },
-            toast.type === "error" ? styles.toastError : styles.toastSuccess,
-          ]}
-          pointerEvents="none"
-        >
-          {toast.type === "success" ? (
-            <Check size={14} color="white" strokeWidth={3} />
-          ) : (
-            <X size={14} color="white" strokeWidth={3} />
-          )}
-          <Text style={styles.toastText}>{toast.message}</Text>
-        </View>
-      )}
+    <View style={styles.root}>
+      <CustomAlert
+        visible={customAlert.visible}
+        title={customAlert.title}
+        message={customAlert.message}
+        icon={customAlert.icon}
+        iconColor={customAlert.iconColor}
+        onClose={hideAlert}
+        actions={customAlert.actions}
+        okLabel={t("alerts.ok")}
+      />
 
       <ScrollView
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingBottom: insets.bottom + TAB_BAR_HEIGHT + 24 },
-        ]}
-      >
-        {/* Header */}
-        <View style={styles.headerOverlay}>
-          <Image
-            source={{
-              uri:
-                restaurant.background_url ||
-                restaurant.images?.[0]?.url ||
-                restaurant.logo_url,
-            }}
-            style={StyleSheet.absoluteFill}
+        style={styles.container}
+        contentContainerStyle={{
+          paddingBottom: 120,
+          paddingTop: insets.top + 16,
+        }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={C.olive}
+            colors={[C.olive]}
           />
-          <View style={styles.headerGradient} />
-
-          <View style={[styles.topActions, { top: insets.top + 16 }]}>
-            <View style={styles.row}>
-              <View style={styles.ownerBadge}>
-                <ChefHat size={20} color="white" />
-                <Text style={styles.ownerBadgeText}>#{user?.id ?? ""}</Text>
-              </View>
-              {pendingReservations.length > 0 && (
-                <View style={styles.pendingBadge}>
-                  <View style={styles.redDot} />
-                  <Text style={styles.pendingBadgeText}>
-                    {pendingReservations.length}{" "}
-                    {t("owner_dashboard.action_needed")}
-                  </Text>
+        }
+      >
+        {/* ── Header ── */}
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.brandText}>RESERVA</Text>
+            <Text style={styles.greetingText}>
+              {getTimeOfDay()},{"\n"}
+              {user?.name?.split(" ")[0] || t("dashboard.guest")}
+            </Text>
+            {user?.reliability_score !== undefined && (
+              <View style={styles.reliabilityRow}>
+                <View style={styles.reliabilityBg}>
+                  <View
+                    style={[
+                      styles.reliabilityFill,
+                      {
+                        width: `${user.reliability_score}%` as any,
+                        backgroundColor:
+                          user.reliability_score > 70
+                            ? C.olive
+                            : user.reliability_score > 40
+                              ? "#f59e0b"
+                              : "#ef4444",
+                      },
+                    ]}
+                  />
                 </View>
-              )}
-            </View>
-            <View style={styles.row}>
-              <TouchableOpacity
-                onPress={() => {
-                  fetchPendingReservations();
-                  fetchRestaurant();
-                }}
-                style={styles.actionIcon}
-              >
-                <RefreshCw size={20} color="white" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => {
-                  logout();
-                  navigation.navigate("Auth");
-                }}
-                style={styles.actionIconDanger}
-              >
-                <LogOut size={20} color="#ff4444" />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={styles.headerBottomInfo}>
-            <TouchableOpacity
-              onPress={() => pickImage("logo")}
-              style={styles.logoContainer}
-            >
-              <Image
-                source={{ uri: restaurant.logo_url }}
-                style={styles.logoImage}
-              />
-              <View style={styles.logoOverlay}>
-                <Plus size={20} color="white" />
-              </View>
-            </TouchableOpacity>
-            <View>
-              <Text style={styles.restaurantName}>{restaurant.name}</Text>
-              <View style={styles.row}>
-                <View style={styles.ratingBox}>
-                  <Star size={12} fill="#eab308" color="#eab308" />
-                  <Text style={styles.ratingText}>
-                    {restaurant.rating} {t("owner_dashboard.rating_suffix")}
-                  </Text>
-                </View>
-                <Text style={styles.bullet}>•</Text>
-                <Text style={styles.categoryText}>
-                  {restaurant.category || t("owner_dashboard.fine_dining")}
+                <Text style={styles.reliabilityLabel}>
+                  {t("dashboard.reliability")}: {user.reliability_score}
                 </Text>
               </View>
-            </View>
+            )}
           </View>
+
+          <TouchableOpacity
+            onPress={() => setShowNotifications(!showNotifications)}
+            style={styles.bellButton}
+          >
+            <Bell size={20} strokeWidth={1.5} color="white" />
+            {unreadCount > 0 && (
+              <View style={styles.bellDot}>
+                <Text style={styles.bellDotText}>{unreadCount}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.mainContent}>
-          {/* Pending Reservations */}
-          {pendingReservations.length > 0 && (
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <View style={styles.sectionTitleRow}>
-                  <View style={styles.cyanDot} />
-                  <Text style={styles.sectionTitleCyan}>
-                    {t("owner_dashboard.new_requests")} (
-                    {pendingReservations.length})
-                  </Text>
-                </View>
+        {/* ── Notifications ── */}
+        {showNotifications && (
+          <View style={styles.notifBox}>
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 12,
+              }}
+            >
+              <Text style={styles.notifTitle}>
+                {t("settings.notifications")}
+              </Text>
+              {notifications.some((n) => !n.read) && (
                 <TouchableOpacity
-                  onPress={() => navigation.navigate("OwnerReservations")}
+                  onPress={async () => {
+                    const token = await AsyncStorage.getItem("reserva_token");
+                    await fetch(getApiUrl("/api/notifications/read-all"), {
+                      method: "POST",
+                      headers: { Authorization: `Bearer ${token}` },
+                    });
+                    fetchNotifications();
+                  }}
                 >
-                  <Text style={styles.viewAllText}>
-                    {t("owner_dashboard.view_all")}
+                  <Text
+                    style={{ fontSize: 11, color: C.olive, fontWeight: "700" }}
+                  >
+                    {t("dashboard.mark_all_read")}
                   </Text>
                 </TouchableOpacity>
+              )}
+            </View>
+            {notifications.length === 0 ? (
+              <Text style={styles.notifEmpty}>
+                {t("dashboard.no_notifications_yet")}
+              </Text>
+            ) : (
+              notifications.map((notif) => (
+                <TouchableOpacity
+                  key={notif.id}
+                  onPress={async () => {
+                    if (!notif.read) {
+                      const token = await AsyncStorage.getItem("reserva_token");
+                      await fetch(
+                        getApiUrl(`/api/notifications/${notif.id}/read`),
+                        {
+                          method: "POST",
+                          headers: { Authorization: `Bearer ${token}` },
+                        },
+                      );
+                      fetchNotifications();
+                    }
+                  }}
+                  style={[
+                    styles.notifItem,
+                    !notif.read && {
+                      backgroundColor: "#f0f4ee",
+                      borderRadius: 10,
+                      padding: 8,
+                    },
+                  ]}
+                >
+                  <Text style={styles.notifName}>{notif.message}</Text>
+                  <Text style={styles.notifSub}>
+                    {new Date(notif.send_at).toLocaleString()}
+                  </Text>
+                </TouchableOpacity>
+              ))
+            )}
+          </View>
+        )}
+
+        {/* ── Waitlist ── */}
+        {waitlistStatus && waitlistStatus.length > 0 && (
+          <View style={styles.section}>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                marginBottom: 12,
+              }}
+            >
+              <View style={styles.pulseDot} />
+              <Text style={[styles.sectionLabel, { color: "#ef4444" }]}>
+                {t("dashboard.active_waitlists")}
+              </Text>
+            </View>
+            {waitlistStatus.map((entry: any) => (
+              <View key={entry.id} style={styles.waitlistCard}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.waitlistName}>
+                    {entry.restaurant_name}
+                  </Text>
+                  <Text style={styles.waitlistStatus}>
+                    {entry.status === "offered"
+                      ? `${t("dashboard.table_ready")} ${Math.max(0, Math.ceil((new Date(entry.expires_at).getTime() - Date.now()) / 60000))}m`
+                      : `${t("dashboard.estimated_wait")}: ~${entry.estimated_wait} mins`}
+                  </Text>
+                </View>
+                {entry.status === "offered" && (
+                  <TouchableOpacity
+                    onPress={() =>
+                      navigation.navigate("ReservationPage", {
+                        id: entry.restaurant_id,
+                      })
+                    }
+                    style={styles.waitlistBtn}
+                  >
+                    <Text style={styles.waitlistBtnText}>
+                      {t("dashboard.accept_now")}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
-              <View style={styles.requestsGrid}>
-                {pendingReservations.map((res) => (
-                  <View key={res.id} style={styles.requestCard}>
-                    <View>
-                      <Text style={styles.customerName}>
-                        {res.customer_name}{" "}
-                        {res.customer_surname ? res.customer_surname[0] : ""}.
-                      </Text>
-                      <View
-                        style={[
-                          styles.reliabilityBadge,
-                          {
-                            backgroundColor:
-                              (res.reliability_score ?? 100) > 70
-                                ? "#ecfdf5"
-                                : (res.reliability_score ?? 100) > 40
-                                  ? "#fffbeb"
-                                  : "#fef2f2",
-                          },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.reliabilityText,
-                            {
-                              color:
-                                (res.reliability_score ?? 100) > 70
-                                  ? "#059669"
-                                  : (res.reliability_score ?? 100) > 40
-                                    ? "#d97706"
-                                    : "#ef4444",
-                            },
-                          ]}
-                        >
-                          ⚡ {String(res.reliability_score ?? 100)}
-                        </Text>
-                      </View>
-                      <Text style={styles.requestDetails}>
-                        {res.people_count} {t("owner_dashboard.people_bullet")}{" "}
-                        • {res.start_time || res.time}
-                        {res.end_time ? ` → ${res.end_time}` : ""}
-                      </Text>
-                    </View>
-                    <View style={styles.requestActions}>
-                      <TouchableOpacity
-                        onPress={() =>
-                          handleReservationAction(res.id, "reject")
-                        }
-                        style={styles.rejectButton}
-                      >
-                        <X size={16} color="#ef4444" />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() =>
-                          handleReservationAction(res.id, "confirm")
-                        }
-                        style={styles.confirmButton}
-                      >
-                        <Check size={16} color="white" />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                ))}
+            ))}
+          </View>
+        )}
+
+        {/* ── Upcoming Reservations ── */}
+        {activeReservations.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>{t("dashboard.upcoming")}</Text>
+            {activeReservations.map((res) => (
+              <ActiveReservationCard
+                key={res.id}
+                reservation={res}
+                t={t}
+                navigation={navigation}
+                onCancel={handleCancel}
+              />
+            ))}
+          </View>
+        )}
+
+        {/* ── Search + Filter Row ── */}
+        <View style={styles.searchRow}>
+          <View style={styles.searchBox}>
+            <Search size={16} color={C.textSub} strokeWidth={1.5} />
+            <TextInput
+              placeholder={t("dashboard.search_placeholder")}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholderTextColor={C.textSub}
+              style={styles.searchInput}
+            />
+          </View>
+          <TouchableOpacity
+            onPress={() => setShowFilters(true)}
+            style={[
+              styles.filterBtn,
+              showFilters && { backgroundColor: C.olive },
+            ]}
+          >
+            <Filter
+              size={18}
+              strokeWidth={1.5}
+              color={showFilters ? "white" : C.olive}
+            />
+          </TouchableOpacity>
+        </View>
+
+        {/* ── Active Filter Chips ── */}
+        {(activeFilters.cuisines.length > 0 ||
+          activeFilters.rating ||
+          activeFilters.priceRange.length > 0 ||
+          activeFilters.openNow ||
+          activeFilters.experiences.length > 0 ||
+          activeFilters.amenities.length > 0 ||
+          activeFilters.moods.length > 0) && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.chipsRow}
+          >
+            {activeFilters.cuisines.map((c) => (
+              <FilterChip
+                key={c}
+                label={c}
+                onRemove={() =>
+                  setActiveFilters((p) => ({
+                    ...p,
+                    cuisines: p.cuisines.filter((x) => x !== c),
+                  }))
+                }
+              />
+            ))}
+            {activeFilters.rating && (
+              <FilterChip
+                label={`${activeFilters.rating}+★`}
+                onRemove={() =>
+                  setActiveFilters((p) => ({ ...p, rating: null }))
+                }
+              />
+            )}
+            {activeFilters.priceRange.map((p) => (
+              <FilterChip
+                key={p}
+                label={p}
+                onRemove={() =>
+                  setActiveFilters((pv) => ({
+                    ...pv,
+                    priceRange: pv.priceRange.filter((x) => x !== p),
+                  }))
+                }
+              />
+            ))}
+            {activeFilters.openNow && (
+              <FilterChip
+                label={t("filters.open_now")}
+                onRemove={() =>
+                  setActiveFilters((p) => ({ ...p, openNow: false }))
+                }
+              />
+            )}
+            {activeFilters.experiences.map((e) => (
+              <FilterChip
+                key={e}
+                label={e}
+                onRemove={() =>
+                  setActiveFilters((p) => ({
+                    ...p,
+                    experiences: p.experiences.filter((x) => x !== e),
+                  }))
+                }
+              />
+            ))}
+            {activeFilters.amenities.map((a) => (
+              <FilterChip
+                key={a}
+                label={a}
+                onRemove={() =>
+                  setActiveFilters((p) => ({
+                    ...p,
+                    amenities: p.amenities.filter((x) => x !== a),
+                  }))
+                }
+              />
+            ))}
+            {activeFilters.moods.map((m) => (
+              <FilterChip
+                key={m}
+                label={m}
+                onRemove={() =>
+                  setActiveFilters((p) => ({
+                    ...p,
+                    moods: p.moods.filter((x) => x !== m),
+                  }))
+                }
+              />
+            ))}
+          </ScrollView>
+        )}
+
+        {/* ── Closest to you — Compact Toggle ── */}
+        {/* FIX: switch/label now flip the instant you tap — no waiting on GPS or network */}
+        <TouchableOpacity
+          onPress={toggleNearest}
+          activeOpacity={0.75}
+          style={styles.nearestCompactRow}
+        >
+          <MapPin
+            size={13}
+            strokeWidth={1.5}
+            color={nearestMode ? C.olive : C.textSub}
+          />
+          <Text
+            style={[
+              styles.nearestCompactText,
+              nearestMode && { color: C.olive },
+            ]}
+          >
+            {t("dashboard.closest_to_you")}
+          </Text>
+          {nearestLoading && (
+            <ActivityIndicator
+              size="small"
+              color={C.olive}
+              style={{ marginRight: 4 }}
+            />
+          )}
+          <Switch
+            value={nearestMode}
+            onValueChange={toggleNearest}
+            trackColor={{ false: "rgba(90,90,64,0.15)", true: `${C.olive}80` }}
+            thumbColor={nearestMode ? C.olive : C.oliveLight}
+            style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }}
+          />
+        </TouchableOpacity>
+
+        {/* ── Recommended ── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>{t("dashboard.recommended")}</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 16, paddingRight: 4 }}
+          >
+            {recommended.length > 0 ? (
+              recommended.map((r) => (
+                <RecommendCard
+                  key={r.id}
+                  restaurant={r}
+                  t={t}
+                  navigation={navigation}
+                />
+              ))
+            ) : (
+              <Text style={styles.emptyText}>
+                {t("dashboard.checking_favorites")}
+              </Text>
+            )}
+          </ScrollView>
+
+          {/* FIX: distance range — only shown while "Closest to you" is on */}
+          {nearestMode && (
+            <View style={styles.distanceRow}>
+              <View style={styles.distanceHeaderRow}>
+                <Text style={styles.distanceLabel}>
+                  {t("dashboard.distance")}
+                </Text>
+                <Text style={styles.distanceValue}>
+                  {distanceUnit === "mi"
+                    ? `${(nearestRadiusKm * 0.621371).toFixed(1)} mi`
+                    : `${nearestRadiusKm.toFixed(1)} km`}
+                </Text>
               </View>
+              <DistanceSlider
+                value={nearestRadiusKm}
+                onChange={setNearestRadiusKm}
+                min={0}
+                max={10}
+                step={0.5}
+              />
             </View>
           )}
+        </View>
 
-          <View style={styles.dashboardGrid}>
-            <TouchableOpacity
-              onPress={() =>
-                navigation.navigate("RestaurantDetail", { id: restaurant.id })
-              }
-              style={styles.quickActionButton}
-            >
-              <View style={styles.quickActionIcon}>
-                <Eye size={20} color="rgba(45, 45, 45, 0.4)" />
-              </View>
-              <Text style={styles.quickActionText}>
-                {t("owner_dashboard.preview_public_page")}
-              </Text>
-            </TouchableOpacity>
+        {/* ── Category Chips ── */}
+        {/* FIX: paddingVertical on container to prevent shadow clip */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.categoryChipsContainer}
+          style={styles.categoryChipsRow}
+        >
+          {CATEGORIES.map((cat) => (
+            <CategoryChip
+              key={cat.id}
+              label={t(cat.label)}
+              active={activeCategory === cat.id}
+              onPress={() => setActiveCategory(cat.id)}
+            />
+          ))}
+        </ScrollView>
 
-            {/* Phone Numbers Card */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  {t("owner_dashboard.phone_numbers_title")}
+        {/* ── Discover (random 5) or filtered results ── */}
+        {isFiltering
+          ? (displayRestaurants.length > 0 || nearestMode) && (
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>
+                  {nearestMode
+                    ? t("dashboard.closest_to_you")
+                    : searchQuery
+                      ? `${t("dashboard.searching")} "${searchQuery}"`
+                      : activeCategory !== "all"
+                        ? t(
+                            CATEGORIES.find((c) => c.id === activeCategory)
+                              ?.label || "categories.all",
+                          )
+                        : t("dashboard.discover")}
                 </Text>
-                {!editingPhone && (
-                  <TouchableOpacity
-                    onPress={() => setEditingPhone(true)}
-                    style={styles.editIconBtn}
-                  >
-                    <Pencil size={14} color="white" />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              <View style={styles.cardPanel}>
-                {!editingPhone ? (
-                  <>
-                    <View style={styles.phoneDisplayRow}>
-                      <View style={styles.phoneLabelCol}>
-                        <Text style={styles.phoneTypeLabel}>
-                          {t("owner_dashboard.primary")}
-                        </Text>
-                        <View style={styles.phoneValueRow}>
-                          <Phone size={14} color="#7C8B6D" />
-                          <Text style={styles.phoneValue}>
-                            {restaurant.phone_number || "—"}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                    {!!restaurant.secondary_phone ? (
-                      <View
-                        style={[styles.phoneDisplayRow, styles.phoneRowBorder]}
-                      >
-                        <View style={styles.phoneLabelCol}>
-                          <Text style={styles.phoneTypeLabel}>
-                            {t("owner_dashboard.secondary")}
-                          </Text>
-                          <View style={styles.phoneValueRow}>
-                            <Phone size={14} color="rgba(45,45,45,0.4)" />
-                            <Text
-                              style={[
-                                styles.phoneValue,
-                                { color: "rgba(45,45,45,0.6)" },
-                              ]}
-                            >
-                              {restaurant.secondary_phone}
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-                    ) : (
-                      <View
-                        style={[styles.phoneDisplayRow, styles.phoneRowBorder]}
-                      >
-                        <Text style={styles.noSecondaryText}>
-                          {t("owner_dashboard.no_secondary_number")}
-                        </Text>
-                      </View>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <View style={styles.inputGroup}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.primary_phone_required_label")}
-                      </Text>
-                      <View style={styles.phoneEditRow}>
-                        <Phone
-                          size={14}
-                          color="#7C8B6D"
-                          style={{ marginLeft: 16 }}
-                        />
-                        <TextInput
-                          style={styles.phoneEditInput}
-                          placeholder={t("owner_dashboard.phone_placeholder")}
-                          placeholderTextColor="rgba(45,45,45,0.3)"
-                          keyboardType="phone-pad"
-                          value={primaryPhone}
-                          onChangeText={setPrimaryPhone}
-                        />
-                      </View>
-                    </View>
-
-                    {showSecondaryPhone ? (
-                      <View style={styles.inputGroup}>
-                        <View style={styles.secondaryLabelRow}>
-                          <Text style={styles.tinyLabel}>
-                            {t("owner_dashboard.secondary_phone_label")}
-                          </Text>
-                          <TouchableOpacity
-                            onPress={handleDeleteSecondaryPhone}
-                          >
-                            <Text style={styles.deleteSecondaryText}>
-                              {t("owner_dashboard.remove")}
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                        <View style={styles.phoneEditRow}>
-                          <Phone
-                            size={14}
-                            color="rgba(45,45,45,0.4)"
-                            style={{ marginLeft: 16 }}
-                          />
-                          <TextInput
-                            style={styles.phoneEditInput}
-                            placeholder={t("owner_dashboard.phone_placeholder")}
-                            placeholderTextColor="rgba(45,45,45,0.3)"
-                            keyboardType="phone-pad"
-                            value={secondaryPhone}
-                            onChangeText={setSecondaryPhone}
-                          />
-                        </View>
-                      </View>
-                    ) : (
-                      <TouchableOpacity
-                        onPress={() => setShowSecondaryPhone(true)}
-                        style={styles.addSecondaryBtn}
-                      >
-                        <Plus size={14} color="#7C8B6D" />
-                        <Text style={styles.addSecondaryText}>
-                          {t("owner_dashboard.add_second_number")}
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-
-                    <View style={styles.cardActionRow}>
-                      <TouchableOpacity
-                        onPress={handleCancelPhone}
-                        style={styles.cardCancelBtn}
-                      >
-                        <Text style={styles.cardCancelText}>
-                          {t("common.cancel")}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={handleSavePhone}
-                        disabled={savingPhone}
-                        style={styles.cardSaveBtn}
-                      >
-                        {savingPhone ? (
-                          <ActivityIndicator size="small" color="white" />
-                        ) : (
-                          <>
-                            <Save size={14} color="white" />
-                            <Text style={styles.cardSaveText}>
-                              {t("owner_dashboard.save")}
-                            </Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                )}
-              </View>
-            </View>
-
-            {/* Average Price Range Card */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  {t("owner_dashboard.avg_price_range")}
-                </Text>
-                {!editingPriceRange && (
-                  <TouchableOpacity
-                    onPress={() => setEditingPriceRange(true)}
-                    style={styles.editIconBtn}
-                  >
-                    <Pencil size={14} color="white" />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              <View style={styles.cardPanel}>
-                {!editingPriceRange ? (
-                  <View style={styles.phoneDisplayRow}>
-                    <View style={styles.phoneLabelCol}>
-                      <Text style={styles.phoneTypeLabel}>
-                        {t("owner_dashboard.cost_per_person")}
-                      </Text>
-                      <View style={styles.phoneValueRow}>
-                        <Wallet size={14} color="#7C8B6D" />
-                        <Text style={styles.phoneValue}>
-                          {minPrice || maxPrice
-                            ? `${minPrice ?? "—"} - ${maxPrice ?? "—"} ֏`
-                            : "—"}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                ) : (
-                  <>
-                    <View style={styles.formDataRow}>
-                      <View style={styles.formInputWrapper}>
-                        <Text style={styles.tinyLabel}>
-                          {t("owner_dashboard.min_price")}
-                        </Text>
-                        <TextInput
-                          style={styles.formMiniInput}
-                          keyboardType="numeric"
-                          placeholder={t(
-                            "owner_dashboard.price_placeholder_min",
-                          )}
-                          placeholderTextColor="rgba(45,45,45,0.3)"
-                          value={minPrice !== null ? String(minPrice) : ""}
-                          onChangeText={(text) =>
-                            setMinPrice(text ? parseInt(text) : null)
-                          }
-                        />
-                      </View>
-                      <View style={styles.formInputWrapper}>
-                        <Text style={styles.tinyLabel}>
-                          {t("owner_dashboard.max_price")}
-                        </Text>
-                        <TextInput
-                          style={styles.formMiniInput}
-                          keyboardType="numeric"
-                          placeholder={t(
-                            "owner_dashboard.price_placeholder_max",
-                          )}
-                          placeholderTextColor="rgba(45,45,45,0.3)"
-                          value={maxPrice !== null ? String(maxPrice) : ""}
-                          onChangeText={(text) =>
-                            setMaxPrice(text ? parseInt(text) : null)
-                          }
-                        />
-                      </View>
-                    </View>
-
-                    <View style={styles.cardActionRow}>
-                      <TouchableOpacity
-                        onPress={handleCancelPriceRange}
-                        style={styles.cardCancelBtn}
-                      >
-                        <Text style={styles.cardCancelText}>
-                          {t("common.cancel")}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={handleSavePriceRange}
-                        disabled={savingPriceRange}
-                        style={styles.cardSaveBtn}
-                      >
-                        {savingPriceRange ? (
-                          <ActivityIndicator size="small" color="white" />
-                        ) : (
-                          <>
-                            <Save size={14} color="white" />
-                            <Text style={styles.cardSaveText}>
-                              {t("owner_dashboard.save")}
-                            </Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                )}
-              </View>
-            </View>
-
-            {/* Gallery */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  {t("owner_dashboard.gallery")}
-                </Text>
-                <TouchableOpacity
-                  onPress={() => pickImage("gallery")}
-                  style={styles.addMediaButton}
-                >
-                  <Plus size={16} color="white" />
-                </TouchableOpacity>
-              </View>
-              <View style={styles.mediaGrid}>
-                {(restaurant.images || []).map((img: any, i: number) => (
-                  <View key={i} style={styles.mediaCard}>
-                    <Image
-                      source={{ uri: img.url }}
-                      style={styles.mediaImage}
-                    />
-                    <TouchableOpacity
-                      onPress={() => handleDeleteImage(img.id)}
-                      style={styles.mediaDeleteButton}
-                    >
-                      <X size={12} color="white" />
-                    </TouchableOpacity>
-                  </View>
-                ))}
-                <TouchableOpacity
-                  onPress={() => pickImage("gallery")}
-                  style={styles.addMediaEmpty}
-                >
-                  <ImageIcon size={24} color="rgba(45, 45, 45, 0.4)" />
-                  <Text style={styles.addMediaText}>
-                    {loading
-                      ? t("owner_dashboard.registering")
-                      : t("owner_dashboard.add_photo")}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Menu */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  {t("owner_dashboard.menu")}
-                </Text>
-                <TouchableOpacity
-                  onPress={pickMenuImage}
-                  style={styles.addMediaButton}
-                >
-                  {uploadingMenu ? (
-                    <ActivityIndicator size="small" color="white" />
-                  ) : (
-                    <Plus size={16} color="white" />
-                  )}
-                </TouchableOpacity>
-              </View>
-              <View style={styles.mediaGrid}>
-                {(restaurant.menuImages || []).map((img: any, i: number) => (
-                  <View key={img.id || i} style={styles.mediaCard}>
-                    <Image
-                      source={{ uri: img.url }}
-                      style={styles.mediaImage}
-                    />
-                    {!img.temp && (
-                      <TouchableOpacity
-                        onPress={() => handleDeleteImage(img.id)}
-                        style={styles.mediaDeleteButton}
-                      >
-                        <X size={12} color="white" />
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                ))}
-                <TouchableOpacity
-                  onPress={pickMenuImage}
-                  style={styles.addMediaEmpty}
-                >
-                  <ImageIcon size={24} color="rgba(45, 45, 45, 0.4)" />
-                  <Text style={styles.addMediaText}>
-                    {uploadingMenu
-                      ? t("owner_dashboard.uploading")
-                      : t("owner_dashboard.add_menu_photo")}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Resource / Floor Plan Management */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  {t("owner_dashboard.floor_plan")}
-                </Text>
-                <TouchableOpacity
-                  onPress={() => setShowResourceForm(!showResourceForm)}
-                  style={styles.addTableButton}
-                >
-                  <Plus size={16} color="white" />
-                </TouchableOpacity>
-              </View>
-
-              {showResourceForm && (
-                <View style={styles.tableForm}>
-                  <View style={styles.formInputWrapper}>
-                    <Text style={styles.tinyLabel}>
-                      {t("owner_dashboard.resource_name")}
-                    </Text>
-                    <TextInput
-                      style={styles.formMiniInput}
-                      placeholder={t(
-                        "owner_dashboard.resource_name_placeholder",
-                      )}
-                      placeholderTextColor="rgba(45,45,45,0.3)"
-                      value={newResource.name}
-                      onChangeText={(text) =>
-                        setNewResource({ ...newResource, name: text })
-                      }
-                    />
-                  </View>
-
-                  <View style={styles.formInputWrapper}>
-                    <Text style={styles.tinyLabel}>
-                      {t("owner_dashboard.resource_type")}
-                    </Text>
-                    <View style={styles.formTabRow}>
-                      {RESOURCE_TYPES.map((rt) => (
-                        <TouchableOpacity
-                          key={rt.id}
-                          onPress={() =>
-                            setNewResource({
-                              ...newResource,
-                              resource_type: rt.id,
-                            })
-                          }
-                          style={[
-                            styles.formTab,
-                            newResource.resource_type === rt.id &&
-                              styles.formTabActive,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.formTabText,
-                              newResource.resource_type === rt.id &&
-                                styles.textWhite,
-                            ]}
-                          >
-                            {rt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  </View>
-
-                  <View style={styles.formDataRow}>
-                    <View style={styles.formInputWrapper}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.capacity")}
-                      </Text>
-                      <TextInput
-                        keyboardType="numeric"
-                        style={styles.formMiniInput}
-                        value={String(newResource.capacity)}
-                        onChangeText={(text) =>
-                          setNewResource({
-                            ...newResource,
-                            capacity: parseInt(text) || 1,
-                          })
-                        }
-                      />
-                    </View>
-                    <View style={styles.formInputWrapper}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.quantity")}
-                      </Text>
-                      <TextInput
-                        keyboardType="numeric"
-                        style={styles.formMiniInput}
-                        value={String(newResource.quantity)}
-                        onChangeText={(text) =>
-                          setNewResource({
-                            ...newResource,
-                            quantity: parseInt(text) || 1,
-                          })
-                        }
-                      />
-                    </View>
-                  </View>
-
-                  <View style={styles.formDataRow}>
-                    <View style={styles.formInputWrapper}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.location")}
-                      </Text>
-                      <View style={styles.formTabRow}>
-                        {["indoor", "outdoor"].map((loc) => (
-                          <TouchableOpacity
-                            key={loc}
-                            onPress={() =>
-                              setNewResource({ ...newResource, location: loc })
-                            }
-                            style={[
-                              styles.formTab,
-                              newResource.location === loc &&
-                                styles.formTabActive,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.formTabText,
-                                newResource.location === loc &&
-                                  styles.textWhite,
-                              ]}
-                            >
-                              {loc === "indoor"
-                                ? t("owner_dashboard.indoor")
-                                : t("owner_dashboard.outdoor")}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </View>
-                  </View>
-
-                  {(newResource.resource_type === "table" ||
-                    newResource.resource_type === "zone") && (
-                    <View style={styles.formInputWrapper}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.shape")}
-                      </Text>
-                      <View style={styles.formIconTabRow}>
-                        {[
-                          { id: "round", icon: Circle },
-                          { id: "square", icon: Square },
-                          { id: "rectangular", icon: RectangleHorizontal },
-                        ].map((s) => (
-                          <TouchableOpacity
-                            key={s.id}
-                            onPress={() =>
-                              setNewResource({ ...newResource, shape: s.id })
-                            }
-                            style={[
-                              styles.formIconTab,
-                              newResource.shape === s.id &&
-                                styles.formIconTabActive,
-                            ]}
-                          >
-                            <s.icon
-                              size={16}
-                              color={
-                                newResource.shape === s.id
-                                  ? "white"
-                                  : "rgba(45, 45, 45, 0.4)"
-                              }
-                            />
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </View>
-                  )}
-
-                  <View style={styles.formDataRow}>
-                    <View style={styles.formInputWrapper}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.min_booking")}
-                      </Text>
-                      <TextInput
-                        keyboardType="numeric"
-                        style={styles.formMiniInput}
-                        value={String(newResource.min_booking_minutes)}
-                        onChangeText={(text) =>
-                          setNewResource({
-                            ...newResource,
-                            min_booking_minutes: parseInt(text) || 30,
-                          })
-                        }
-                      />
-                    </View>
-                    <View style={styles.formInputWrapper}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.max_booking")}
-                      </Text>
-                      <TextInput
-                        keyboardType="numeric"
-                        style={styles.formMiniInput}
-                        placeholder={t("owner_dashboard.no_limit")}
-                        placeholderTextColor="rgba(45,45,45,0.3)"
-                        value={
-                          newResource.max_booking_minutes
-                            ? String(newResource.max_booking_minutes)
-                            : ""
-                        }
-                        onChangeText={(text) =>
-                          setNewResource({
-                            ...newResource,
-                            max_booking_minutes: text ? parseInt(text) : null,
-                          })
-                        }
-                      />
-                    </View>
-                  </View>
-
-                  <View style={styles.formInputWrapper}>
-                    <Text style={styles.tinyLabel}>
-                      {t("owner_dashboard.price_per_hour")}
-                    </Text>
-                    <View style={styles.relativeInput}>
-                      <TextInput
-                        keyboardType="numeric"
-                        style={styles.formMiniInput}
-                        value={String(newResource.price_per_hour)}
-                        onChangeText={(text) =>
-                          setNewResource({
-                            ...newResource,
-                            price_per_hour: parseFloat(text) || 0,
-                          })
-                        }
-                      />
-                    </View>
-                  </View>
-
-                  <View style={styles.formActions}>
-                    <TouchableOpacity
-                      onPress={handleAddResources}
-                      style={styles.confirmAddTable}
-                    >
-                      <Text style={styles.confirmAddTableText}>
-                        {loading
-                          ? t("common.saving")
-                          : t("owner_dashboard.add_table")}
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => setShowResourceForm(false)}
-                      style={styles.cancelAddTable}
-                    >
-                      <Text style={styles.cancelAddTableText}>
-                        {t("common.cancel")}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
-
-              <View style={styles.tablesGrid}>
-                {resources.length === 0 ? (
-                  <View style={styles.emptyGrid}>
-                    <Text style={styles.emptyGridText}>
-                      {t("owner_dashboard.no_resources")}
-                    </Text>
-                  </View>
-                ) : (
-                  resources.map((resource) => (
-                    <View key={resource.id} style={styles.tableCard}>
-                      <View style={styles.tableCardHeader}>
-                        <ResourceShapeIcon resource={resource} />
-                        <TouchableOpacity
-                          onPress={() => handleDeleteResource(resource.id)}
-                        >
-                          <X size={12} color="#ef4444" />
-                        </TouchableOpacity>
-                      </View>
-                      <Text style={styles.tableCapacity}>
-                        {resource.capacity} {t("owner_dashboard.seats")}
-                      </Text>
-                      <Text style={styles.tableLocation}>
-                        {resource.resource_type !== "table"
-                          ? resource.resource_type
-                          : resource.location}
-                      </Text>
-                      {resource.price_per_hour > 0 && (
-                        <Text style={styles.resourcePrice}>
-                          ${resource.price_per_hour}
-                          {t("owner_dashboard.per_hour_suffix")}
-                        </Text>
-                      )}
-                    </View>
-                  ))
-                )}
-              </View>
-            </View>
-
-            {/* Restaurant Filters Card */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  {t("owner_dashboard.restaurant_filters_title")}
-                </Text>
-                {!editingFilters && (
-                  <TouchableOpacity
-                    onPress={() => setEditingFilters(true)}
-                    style={styles.editIconBtn}
-                  >
-                    <Pencil size={14} color="white" />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              <View style={styles.cardPanel}>
-                {!editingFilters ? (
-                  <>
-                    {filterExperienceTypes.length === 0 &&
-                    filterAmenities.length === 0 &&
-                    filterMoods.length === 0 ? (
-                      <Text style={styles.noFiltersText}>
-                        {t("owner_dashboard.no_filters_selected")}
-                      </Text>
-                    ) : (
-                      <>
-                        {filterExperienceTypes.length > 0 && (
-                          <View style={styles.filterGroup}>
-                            <Text style={styles.filterGroupLabel}>
-                              {t("owner_dashboard.experience_label")}
-                            </Text>
-                            <View style={styles.chipRow}>
-                              {filterExperienceTypes.map((f) => (
-                                <View key={f} style={styles.chip}>
-                                  <Text style={styles.chipText}>{f}</Text>
-                                </View>
-                              ))}
-                            </View>
-                          </View>
-                        )}
-                        {filterAmenities.length > 0 && (
-                          <View style={styles.filterGroup}>
-                            <Text style={styles.filterGroupLabel}>
-                              {t("owner_dashboard.amenities_label")}
-                            </Text>
-                            <View style={styles.chipRow}>
-                              {filterAmenities.map((f) => (
-                                <View key={f} style={styles.chip}>
-                                  <Text style={styles.chipText}>{f}</Text>
-                                </View>
-                              ))}
-                            </View>
-                          </View>
-                        )}
-                        {filterMoods.length > 0 && (
-                          <View style={styles.filterGroup}>
-                            <Text style={styles.filterGroupLabel}>
-                              {t("owner_dashboard.best_for_label")}
-                            </Text>
-                            <View style={styles.chipRow}>
-                              {filterMoods.map((f) => (
-                                <View key={f} style={styles.chip}>
-                                  <Text style={styles.chipText}>{f}</Text>
-                                </View>
-                              ))}
-                            </View>
-                          </View>
-                        )}
-                      </>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <View style={{ gap: 20 }}>
-                      <View>
-                        <Text style={styles.filterEditGroupTitle}>
-                          {t("owner_dashboard.experience_types_title")}
-                        </Text>
-                        {Object.entries(EXPERIENCE_GROUPS).map(
-                          ([group, items]) => (
-                            <View key={group} style={{ marginBottom: 12 }}>
-                              <SubLabel label={group} />
-                              <MultiSelectPills
-                                options={items}
-                                selected={filterExperienceTypes}
-                                onToggle={(val) =>
-                                  setFilterExperienceTypes((prev) =>
-                                    prev.includes(val)
-                                      ? prev.filter((x) => x !== val)
-                                      : [...prev, val],
-                                  )
-                                }
-                              />
-                            </View>
-                          ),
-                        )}
-                      </View>
-                      <View>
-                        <Text style={styles.filterEditGroupTitle}>
-                          {t("owner_dashboard.amenities_label")}
-                        </Text>
-                        <MultiSelectPills
-                          options={AMENITIES}
-                          selected={filterAmenities}
-                          onToggle={(val) =>
-                            setFilterAmenities((prev) =>
-                              prev.includes(val)
-                                ? prev.filter((x) => x !== val)
-                                : [...prev, val],
-                            )
-                          }
-                        />
-                      </View>
-                      <View>
-                        <Text style={styles.filterEditGroupTitle}>
-                          {t("owner_dashboard.best_for_label")}
-                        </Text>
-                        <MultiSelectPills
-                          options={MOODS}
-                          selected={filterMoods}
-                          onToggle={(val) =>
-                            setFilterMoods((prev) =>
-                              prev.includes(val)
-                                ? prev.filter((x) => x !== val)
-                                : [...prev, val],
-                            )
-                          }
-                        />
-                      </View>
-                    </View>
-
-                    <View style={[styles.cardActionRow, { marginTop: 20 }]}>
-                      <TouchableOpacity
-                        onPress={handleCancelFilters}
-                        style={styles.cardCancelBtn}
-                      >
-                        <Text style={styles.cardCancelText}>
-                          {t("common.cancel")}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={handleSaveFilters}
-                        disabled={savingFilters}
-                        style={styles.cardSaveBtn}
-                      >
-                        {savingFilters ? (
-                          <ActivityIndicator size="small" color="white" />
-                        ) : (
-                          <>
-                            <Save size={14} color="white" />
-                            <Text style={styles.cardSaveText}>
-                              {t("owner_dashboard.save_filters")}
-                            </Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                )}
-              </View>
-            </View>
-
-            {/* Location Card */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>
-                  {t("owner_dashboard.location")}
-                </Text>
-                {!editingLocation ? (
-                  <TouchableOpacity
-                    onPress={() => setEditingLocation(true)}
-                    style={styles.editIconBtn}
-                  >
-                    <Pencil size={14} color="white" />
-                  </TouchableOpacity>
-                ) : (
-                  <MapPin size={16} color="rgba(45, 45, 45, 0.4)" />
-                )}
-              </View>
-
-              {!editingLocation ? (
-                <View style={styles.mapCard}>
-                  <RestaurantMap location={restaurant.location} />
-                  <View style={styles.mapInfo}>
-                    <Text style={styles.mapAddress} numberOfLines={1}>
-                      {restaurant.location}
-                    </Text>
-                    {!!restaurant.latitude && !!restaurant.longitude && (
-                      <Text style={styles.mapCoords}>
-                        {Number(restaurant.latitude).toFixed(5)},{" "}
-                        {Number(restaurant.longitude).toFixed(5)}
-                      </Text>
-                    )}
-                  </View>
-                </View>
-              ) : (
-                <View style={styles.cardPanel}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.tinyLabel}>
-                      {t("owner_dashboard.address_label")}
-                    </Text>
-                    <TextInput
-                      style={styles.formMiniInput}
-                      placeholder={t("owner_dashboard.address_placeholder")}
-                      placeholderTextColor="rgba(45,45,45,0.3)"
-                      value={locationAddress}
-                      onChangeText={setLocationAddress}
-                    />
-                  </View>
-
-                  <View style={styles.formDataRow}>
-                    <View style={styles.formInputWrapper}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.latitude_label")}
-                      </Text>
-                      <TextInput
-                        style={styles.formMiniInput}
-                        keyboardType="numeric"
-                        placeholder={t("owner_dashboard.lat_placeholder")}
-                        placeholderTextColor="rgba(45,45,45,0.3)"
-                        value={locationLat !== null ? String(locationLat) : ""}
-                        onChangeText={(text) =>
-                          setLocationLat(text ? parseFloat(text) : null)
-                        }
-                      />
-                    </View>
-                    <View style={styles.formInputWrapper}>
-                      <Text style={styles.tinyLabel}>
-                        {t("owner_dashboard.longitude_label")}
-                      </Text>
-                      <TextInput
-                        style={styles.formMiniInput}
-                        keyboardType="numeric"
-                        placeholder={t("owner_dashboard.lng_placeholder")}
-                        placeholderTextColor="rgba(45,45,45,0.3)"
-                        value={locationLng !== null ? String(locationLng) : ""}
-                        onChangeText={(text) =>
-                          setLocationLng(text ? parseFloat(text) : null)
-                        }
-                      />
-                    </View>
-                  </View>
-
-                  <View
-                    style={{
-                      borderRadius: 20,
-                      overflow: "hidden",
-                      marginTop: 4,
-                    }}
-                  >
-                    <Text style={[styles.tinyLabel, { marginBottom: 8 }]}>
-                      {t("owner_dashboard.tap_drag_pin")}
-                    </Text>
-                    <EditableLocationMap
-                      lat={locationLat ?? 40.1792}
-                      lng={locationLng ?? 44.4991}
-                      onLocationChange={(lat, lng) => {
-                        setLocationLat(parseFloat(lat.toFixed(6)));
-                        setLocationLng(parseFloat(lng.toFixed(6)));
+                {displayRestaurants.length > 0 ? (
+                  displayRestaurants.map((r) => (
+                    <HistoryCard
+                      key={r.id}
+                      restaurant={{
+                        ...r,
+                        date: r.cuisine_type || t("dashboard.artisanal"),
                       }}
+                      t={t}
+                      navigation={navigation}
                     />
-                  </View>
+                  ))
+                ) : (
+                  // FIX: previously rendered nothing at all when the current
+                  // distance radius had zero matches — a blank, confusing screen.
+                  <Text style={styles.emptyText}>
+                    {t("dashboard.no_tables_found")}
+                  </Text>
+                )}
+              </View>
+            )
+          : filteredDiscover.length > 0 && (
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>
+                  {t("dashboard.discover")}
+                </Text>
+                {filteredDiscover.map((r) => (
+                  <HistoryCard
+                    key={r.id}
+                    restaurant={{
+                      ...r,
+                      date: r.cuisine_type || t("dashboard.artisanal"),
+                    }}
+                    t={t}
+                    navigation={navigation}
+                  />
+                ))}
+              </View>
+            )}
 
-                  <View style={styles.cardActionRow}>
-                    <TouchableOpacity
-                      onPress={handleCancelLocation}
-                      style={styles.cardCancelBtn}
-                    >
-                      <Text style={styles.cardCancelText}>
-                        {t("common.cancel")}
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={handleSaveLocation}
-                      disabled={savingLocation}
-                      style={styles.cardSaveBtn}
-                    >
-                      {savingLocation ? (
-                        <ActivityIndicator size="small" color="white" />
-                      ) : (
-                        <>
-                          <Save size={14} color="white" />
-                          <Text style={styles.cardSaveText}>
-                            {t("owner_dashboard.save_location")}
-                          </Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
-            </View>
-          </View>
+        {/* ── History ── */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>{t("dashboard.history")}</Text>
+          {visitedRestaurants.length > 0 ? (
+            visitedRestaurants.map((r) => (
+              <HistoryCard
+                key={r.id}
+                restaurant={r}
+                t={t}
+                navigation={navigation}
+              />
+            ))
+          ) : (
+            <Text style={styles.emptyText}>
+              {t("dashboard.culinary_journey")}
+            </Text>
+          )}
         </View>
       </ScrollView>
+
+      {showFilters && (
+        <FilterModal
+          onClose={() => setShowFilters(false)}
+          activeFilters={activeFilters}
+          setActiveFilters={setActiveFilters}
+          cuisines={CUISINES}
+          priceRanges={PRICE_RANGES}
+          ratings={RATINGS}
+          t={t}
+        />
+      )}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#FDFCFB" },
-  centeredContainer: {
-    flex: 1,
-    backgroundColor: "#FDFCFB",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  scrollContent: {},
-  row: { flexDirection: "row", gap: 12 },
-  inputGroup: { gap: 8 },
-  relativeInput: { position: "relative" },
-  textWhite: { color: "white" },
-  toastContainer: {
-    position: "absolute",
-    left: 24,
-    right: 24,
-    zIndex: 9999,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 20,
-  },
-  toastSuccess: { backgroundColor: "#7C8B6D" },
-  toastError: { backgroundColor: "#ef4444" },
-  toastText: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "white",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    flex: 1,
-  },
-  headerOverlay: { height: 400, position: "relative" },
-  headerGradient: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.3)",
-  },
-  topActions: {
-    position: "absolute",
-    left: 20,
-    right: 20,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  ownerBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
-  },
-  ownerBadgeText: {
-    color: "white",
-    fontSize: 9,
-    fontWeight: "900",
-    opacity: 0.8,
-  },
-  pendingBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: "#ef4444",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
-  },
-  redDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "white" },
-  pendingBadgeText: {
-    color: "white",
-    fontSize: 9,
-    fontWeight: "900",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  actionIcon: {
-    width: 44,
-    height: 44,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  actionIconDanger: {
-    width: 44,
-    height: 44,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headerBottomInfo: {
-    position: "absolute",
-    bottom: 30,
-    left: 24,
-    right: 24,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    gap: 16,
-  },
-  logoContainer: {
-    width: 80,
-    height: 80,
-    backgroundColor: "white",
-    borderRadius: 24,
-    borderWidth: 3,
-    borderColor: "rgba(255,255,255,0.3)",
-    justifyContent: "center",
-    alignItems: "center",
+// ── CategoryChip ──────────────────────────────────────────────────────────────
+
+function CategoryChip({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  const handlePress = () => {
+    Animated.sequence([
+      Animated.timing(scale, {
+        toValue: 0.93,
+        duration: 80,
+        useNativeDriver: true,
+      }),
+      Animated.timing(scale, {
+        toValue: 1,
+        duration: 120,
+        useNativeDriver: true,
+      }),
+    ]).start();
+    onPress();
+  };
+
+  return (
+    <Animated.View style={{ transform: [{ scale }] }}>
+      <TouchableOpacity
+        onPress={handlePress}
+        activeOpacity={0.85}
+        style={[styles.categoryChip, active && styles.categoryChipActive]}
+      >
+        <Text
+          style={[
+            styles.categoryChipText,
+            active && styles.categoryChipTextActive,
+          ]}
+        >
+          {label}
+        </Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+interface ActiveFilters {
+  cuisines: string[];
+  rating: number | null;
+  priceRange: string[];
+  openNow: boolean;
+  experiences: string[];
+  amenities: string[];
+  moods: string[];
+}
+
+function FilterChip({
+  label,
+  onRemove,
+}: {
+  label: string;
+  onRemove: () => void;
+}) {
+  return (
+    <View style={styles.chip}>
+      <Text style={styles.chipText}>{label}</Text>
+      <TouchableOpacity onPress={onRemove}>
+        <X size={10} strokeWidth={3} color="white" />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function ActiveReservationCard({ reservation, t, navigation, onCancel }: any) {
+  const isPending = reservation.status === "pending";
+  return (
+    <TouchableOpacity
+      onPress={() =>
+        navigation.navigate("RestaurantDetail", {
+          id: reservation.restaurant_id,
+        })
+      }
+      style={styles.activeCard}
+    >
+      <Image
+        source={{
+          uri:
+            reservation.logo_url ||
+            `https://picsum.photos/seed/${reservation.restaurant_id}/200/200`,
+        }}
+        style={styles.activeCardImage}
+      />
+      <View style={{ flex: 1 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <Text style={styles.activeCardName} numberOfLines={1}>
+            {reservation.restaurant_name}
+          </Text>
+          <View
+            style={[
+              styles.statusBadge,
+              { backgroundColor: isPending ? "#fffbeb" : "#ecfdf5" },
+            ]}
+          >
+            <Text
+              style={[
+                styles.statusBadgeText,
+                { color: isPending ? "#d97706" : "#059669" },
+              ]}
+            >
+              {isPending
+                ? t("dashboard.pending_approval")
+                : t("dashboard.confirmed")}
+            </Text>
+          </View>
+        </View>
+        <View style={{ flexDirection: "row", gap: 12, marginTop: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Calendar size={11} color={C.textSub} />
+            <Text style={styles.activeCardMeta}>
+              {new Date(reservation.date).toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </Text>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Clock size={11} color={C.textSub} />
+            <Text style={styles.activeCardMeta}>
+              {reservation.time} · {reservation.people_count}{" "}
+              {reservation.people_count === 1
+                ? t("dashboard.person")
+                : t("dashboard.people")}
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity
+          onPress={(e) => {
+            e.stopPropagation();
+            onCancel(
+              reservation.id,
+              reservation.status,
+              reservation.date,
+              reservation.time,
+            );
+          }}
+          style={styles.cancelBtn}
+        >
+          <Text style={styles.cancelBtnText}>{t("common.cancel")}</Text>
+        </TouchableOpacity>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// FIX: lightweight custom slider (avoids pulling in a native slider dependency).
+// The PanResponder reads trackWidth/onChange from refs, not from closed-over
+// props, so it never goes stale — dragging always reflects the live value.
+function DistanceSlider({
+  value,
+  onChange,
+  min = 0,
+  max = 10,
+  step = 0.5,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const trackWidthRef = useRef(0);
+  const onChangeRef = useRef(onChange);
+  const THUMB = 22;
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  const valueFromX = (x: number) => {
+    const tw = trackWidthRef.current;
+    if (tw <= 0) return value;
+    const ratio = Math.min(1, Math.max(0, x / tw));
+    const raw = min + ratio * (max - min);
+    const stepped = Math.round(raw / step) * step;
+    return Math.min(max, Math.max(min, Math.round(stepped * 10) / 10));
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        onChangeRef.current(valueFromX(evt.nativeEvent.locationX));
+      },
+      onPanResponderMove: (evt) => {
+        onChangeRef.current(valueFromX(evt.nativeEvent.locationX));
+      },
+    }),
+  ).current;
+
+  const ratio = max > min ? (value - min) / (max - min) : 0;
+  const thumbLeft = Math.max(
+    0,
+    Math.min(trackWidth - THUMB, ratio * trackWidth - THUMB / 2),
+  );
+
+  return (
+    <View
+      style={styles.sliderTrack}
+      onLayout={(e) => {
+        trackWidthRef.current = e.nativeEvent.layout.width;
+        setTrackWidth(e.nativeEvent.layout.width);
+      }}
+      {...panResponder.panHandlers}
+    >
+      <View style={styles.sliderTrackBg} />
+      <View style={[styles.sliderFill, { width: `${ratio * 100}%` }]} />
+      {trackWidth > 0 && (
+        <View
+          pointerEvents="none"
+          style={[styles.sliderThumb, { left: thumbLeft }]}
+        />
+      )}
+    </View>
+  );
+}
+
+function RecommendCard({ restaurant, t, navigation }: any) {
+  const { distanceUnit } = useSettings();
+  const distValue =
+    distanceUnit === "mi"
+      ? `${((restaurant.dist_km || 2.4) * 0.621371).toFixed(1)} mi`
+      : `${restaurant.dist_km || 2.4} km`;
+
+  return (
+    <TouchableOpacity
+      onPress={() =>
+        navigation.navigate("RestaurantDetail", { id: restaurant.id })
+      }
+      style={styles.recommendCard}
+      activeOpacity={0.9}
+    >
+      <Image
+        source={{
+          uri:
+            restaurant.cover_image_url ||
+            restaurant.logo_url ||
+            `https://picsum.photos/seed/${restaurant.id}/600/400`,
+        }}
+        style={styles.recommendImage}
+      />
+      <View style={styles.recommendOverlay} />
+      <View style={styles.recommendContent}>
+        <View style={styles.recommendTag}>
+          <Text style={styles.recommendTagText}>
+            {t("dashboard.artisanal_cozy")}
+          </Text>
+        </View>
+        <Text style={styles.recommendName}>{restaurant.name}</Text>
+        <Text style={styles.recommendMeta}>
+          {distValue} away · {restaurant.rating || 4.4} rating
+        </Text>
+      </View>
+      <View style={styles.recommendFab}>
+        <Diamond size={14} color="white" fill="white" />
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+function HistoryCard({ restaurant, t, navigation }: any) {
+  const { distanceUnit } = useSettings();
+  const distValue =
+    distanceUnit === "mi"
+      ? `${((restaurant.dist_km || 2.4) * 0.621371).toFixed(1)} mi`
+      : `${restaurant.dist_km || 2.4} km`;
+
+  const price = getPriceSymbol(restaurant.min_price, restaurant.max_price);
+
+  return (
+    <TouchableOpacity
+      onPress={() =>
+        navigation.navigate("RestaurantDetail", { id: restaurant.id })
+      }
+      style={styles.histCard}
+      activeOpacity={0.8}
+    >
+      <View style={styles.histImageBox}>
+        <Image
+          source={{
+            uri:
+              restaurant.cover_image_url ||
+              restaurant.logo_url ||
+              `https://picsum.photos/seed/${restaurant.id}/200/200`,
+          }}
+          style={styles.histImage}
+        />
+      </View>
+      <View style={styles.histInfo}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+          <Text style={styles.histName} numberOfLines={1}>
+            {restaurant.name}
+          </Text>
+          <Text style={styles.histPrice}>{price}</Text>
+        </View>
+        <Text style={styles.histMeta} numberOfLines={1}>
+          {distValue} away · {restaurant.rating || "4.4"} rating
+        </Text>
+        {restaurant.date && (
+          <Text style={styles.histDate}>{restaurant.date}</Text>
+        )}
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// ── FilterModal ───────────────────────────────────────────────────────────────
+// FIX: Modal now animates in on mount (slide up + backdrop fade) and animates
+// out on every close path (backdrop tap, Apply, swipe-down) via a single
+// `animateClose` helper, instead of appearing/disappearing instantly.
+
+function FilterModal({
+  onClose,
+  activeFilters,
+  setActiveFilters,
+  cuisines,
+  priceRanges,
+  ratings,
+  t,
+}: any) {
+  const [local, setLocal] = useState<ActiveFilters>({ ...activeFilters });
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    cuisine: true,
+    experience: false,
+    amenities: false,
+    mood: false,
+  });
+
+  // FIX: start off-screen (below the fold) and animate to 0 on mount
+  const translateY = useRef(new Animated.Value(height)).current;
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(translateY, {
+        toValue: 0,
+        useNativeDriver: true,
+        tension: 65,
+        friction: 11,
+      }),
+      Animated.timing(backdropOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // FIX: single animated-close path shared by backdrop tap, Apply, and swipe
+  const animateClose = useCallback(() => {
+    Animated.parallel([
+      Animated.timing(translateY, {
+        toValue: height,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+      Animated.timing(backdropOpacity, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (finished) onClose();
+    });
+  }, [onClose]);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, g) =>
+        g.dy > 8 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderMove: (_, g) => {
+        if (g.dy > 0) translateY.setValue(g.dy);
+      },
+      onPanResponderRelease: (_, g) => {
+        if (g.dy > 80 || g.vy > 0.5) {
+          animateClose();
+        } else {
+          Animated.spring(translateY, {
+            toValue: 0,
+            useNativeDriver: true,
+            tension: 100,
+            friction: 12,
+          }).start();
+        }
+      },
+    }),
+  ).current;
+
+  // FIX: LayoutAnimation gives the expand/collapse a smooth transition
+  // instead of an instant snap
+  const toggleSection = (key: string) => {
+    LayoutAnimation.configureNext(
+      LayoutAnimation.create(220, "easeInEaseOut", "opacity"),
+    );
+    setOpenSections((p) => ({ ...p, [key]: !p[key] }));
+  };
+
+  const toggleItem = (field: keyof ActiveFilters, value: string) =>
+    setLocal((p: any) => ({
+      ...p,
+      [field]: p[field].includes(value)
+        ? p[field].filter((x: string) => x !== value)
+        : [...p[field], value],
+    }));
+
+  const reset = () =>
+    setLocal({
+      cuisines: [],
+      rating: null,
+      priceRange: [],
+      openNow: false,
+      experiences: [],
+      amenities: [],
+      moods: [],
+    });
+
+  const apply = () => {
+    setActiveFilters(local);
+    animateClose();
+  };
+
+  // FIX: Consolidated EXPERIENCES — removed duplicate logic entries, grouped cleanly
+  const totalActive =
+    local.cuisines.length +
+    local.experiences.length +
+    local.amenities.length +
+    local.moods.length +
+    local.priceRange.length +
+    (local.rating ? 1 : 0) +
+    (local.openNow ? 1 : 0);
+
+  return (
+    <View style={styles.modalOverlay}>
+      <Pressable onPress={animateClose} style={StyleSheet.absoluteFill}>
+        <Animated.View
+          style={[styles.modalBackdrop, { opacity: backdropOpacity }]}
+        />
+      </Pressable>
+      <Animated.View
+        style={[styles.modalSheet, { transform: [{ translateY }] }]}
+      >
+        <View {...panResponder.panHandlers} style={styles.modalDragArea}>
+          <View style={styles.modalHandle} />
+          <View style={styles.modalHeaderRow}>
+            <Text style={styles.modalTitle}>{t("filters.modal_title")}</Text>
+            {totalActive > 0 && (
+              <View style={styles.activeCountBadge}>
+                <Text style={styles.activeCountText}>{totalActive}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        <ScrollView
+          // FIX: horizontal padding on ScrollView so pills don't touch walls
+          contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40 }}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* ── Cuisine & Basics ── */}
+          <CollapsibleSection
+            label={t("filters.cuisine_basics")}
+            isOpen={openSections.cuisine}
+            onToggle={() => toggleSection("cuisine")}
+            activeCount={
+              local.cuisines.length +
+              local.priceRange.length +
+              (local.rating ? 1 : 0) +
+              (local.openNow ? 1 : 0)
+            }
+          >
+            <SectionSubLabel label={t("filters.cuisine")} />
+            <View style={fStyles.pillGrid}>
+              {cuisines.map((c: string) => (
+                <PillButton
+                  key={c}
+                  label={c}
+                  active={local.cuisines.includes(c)}
+                  onPress={() => toggleItem("cuisines", c)}
+                />
+              ))}
+            </View>
+
+            <SectionSubLabel label={t("filters.price_range")} />
+            <View style={fStyles.pillRow}>
+              {priceRanges.map((p: string) => (
+                <PillButton
+                  key={p}
+                  label={p}
+                  active={local.priceRange.includes(p)}
+                  onPress={() => toggleItem("priceRange", p)}
+                  flex
+                />
+              ))}
+            </View>
+
+            <SectionSubLabel label={t("filters.rating")} />
+            <View style={fStyles.pillRow}>
+              {ratings.map((r: number) => (
+                <TouchableOpacity
+                  key={r}
+                  onPress={() =>
+                    setLocal((p: ActiveFilters) => ({
+                      ...p,
+                      rating: p.rating === r ? null : r,
+                    }))
+                  }
+                  style={[
+                    fStyles.pill,
+                    {
+                      flex: 1,
+                      alignItems: "center",
+                      flexDirection: "row",
+                      gap: 4,
+                      justifyContent: "center",
+                    },
+                    local.rating === r && fStyles.pillActive,
+                  ]}
+                >
+                  <Star
+                    size={12}
+                    color={local.rating === r ? "white" : C.text}
+                    fill={local.rating === r ? "white" : "none"}
+                  />
+                  <Text
+                    style={[
+                      fStyles.pillText,
+                      local.rating === r && fStyles.pillTextActive,
+                    ]}
+                  >
+                    {r}+
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={fStyles.toggleRow}>
+              <View>
+                <Text style={fStyles.toggleLabel}>{t("filters.open_now")}</Text>
+                <Text style={fStyles.toggleSub}>{t("filters.only_open")}</Text>
+              </View>
+              <Switch
+                value={local.openNow}
+                onValueChange={(v) =>
+                  setLocal((p: ActiveFilters) => ({ ...p, openNow: v }))
+                }
+                trackColor={{ false: "rgba(0,0,0,0.1)", true: C.olive }}
+                thumbColor="white"
+              />
+            </View>
+          </CollapsibleSection>
+
+          {/* ── Experience ── */}
+          <CollapsibleSection
+            label={t("filters.experience")}
+            isOpen={openSections.experience}
+            onToggle={() => toggleSection("experience")}
+            activeCount={local.experiences.length}
+            highlight
+          >
+            {Object.entries(EXPERIENCE_GROUPS).map(([group, items]) => (
+              <View key={group}>
+                <SectionSubLabel label={group} />
+                <View style={fStyles.pillGrid}>
+                  {items.map((item) => (
+                    <PillButton
+                      key={item}
+                      label={item}
+                      active={local.experiences.includes(item)}
+                      onPress={() => toggleItem("experiences", item)}
+                    />
+                  ))}
+                </View>
+              </View>
+            ))}
+          </CollapsibleSection>
+
+          {/* ── Amenities ── */}
+          <CollapsibleSection
+            label={t("filters.amenities")}
+            isOpen={openSections.amenities}
+            onToggle={() => toggleSection("amenities")}
+            activeCount={local.amenities.length}
+          >
+            <View style={fStyles.pillGrid}>
+              {AMENITIES.map((item) => (
+                <PillButton
+                  key={item}
+                  label={item}
+                  active={local.amenities.includes(item)}
+                  onPress={() => toggleItem("amenities", item)}
+                />
+              ))}
+            </View>
+          </CollapsibleSection>
+
+          {/* ── Mood ── */}
+          <CollapsibleSection
+            label={t("filters.mood_occasion")}
+            isOpen={openSections.mood}
+            onToggle={() => toggleSection("mood")}
+            activeCount={local.moods.length}
+          >
+            <View style={fStyles.pillGrid}>
+              {MOODS.map((item) => (
+                <PillButton
+                  key={item}
+                  label={item}
+                  active={local.moods.includes(item)}
+                  onPress={() => toggleItem("moods", item)}
+                />
+              ))}
+            </View>
+          </CollapsibleSection>
+
+          <View style={fStyles.footer}>
+            <TouchableOpacity onPress={reset} style={fStyles.resetBtn}>
+              <Text style={fStyles.resetBtnText}>
+                {t("filters.modal_reset")}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={apply} style={fStyles.applyBtn}>
+              <Text style={fStyles.applyBtnText}>
+                {t("filters.modal_apply")}
+                {totalActive > 0 ? ` (${totalActive})` : ""}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </Animated.View>
+    </View>
+  );
+}
+
+function SectionSubLabel({ label }: { label: string }) {
+  return <Text style={fStyles.subLabel}>{label}</Text>;
+}
+
+// FIX: memoized so toggling a pill in one section doesn't re-render siblings
+const CollapsibleSection = React.memo(function CollapsibleSection({
+  label,
+  isOpen,
+  onToggle,
+  activeCount,
+  highlight,
+  children,
+}: {
+  label: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  activeCount: number;
+  highlight?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={[fStyles.section, highlight && fStyles.sectionHighlight]}>
+      <TouchableOpacity
+        onPress={onToggle}
+        style={fStyles.sectionHeader}
+        activeOpacity={0.7}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text
+            style={[fStyles.sectionTitle, highlight && { color: C.oliveDeep }]}
+          >
+            {label}
+          </Text>
+          {activeCount > 0 && (
+            <View style={fStyles.sectionBadge}>
+              <Text style={fStyles.sectionBadgeText}>{activeCount}</Text>
+            </View>
+          )}
+        </View>
+        <Text style={fStyles.chevron}>{isOpen ? "▲" : "▼"}</Text>
+      </TouchableOpacity>
+      {isOpen && <View style={{ paddingBottom: 12 }}>{children}</View>}
+    </View>
+  );
+});
+
+// FIX: memoized so unrelated pill re-renders don't cascade through the grid
+const PillButton = React.memo(function PillButton({
+  label,
+  active,
+  onPress,
+  flex,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+  flex?: boolean;
+}) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      style={[fStyles.pill, active && fStyles.pillActive, flex && { flex: 1 }]}
+    >
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: flex ? "center" : "flex-start",
+        }}
+      >
+        {active && (
+          <Check
+            size={11}
+            color="white"
+            strokeWidth={3}
+            style={{ marginRight: 4 }}
+          />
+        )}
+        <Text style={[fStyles.pillText, active && fStyles.pillTextActive]}>
+          {label}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+});
+
+// ── Filter styles (consolidated, no duplication) ─────────────────────────────
+
+const fStyles = StyleSheet.create({
+  section: {
+    backgroundColor: "rgba(0,0,0,0.02)",
+    borderRadius: 18,
+    marginBottom: 10,
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.05)",
   },
-  logoImage: { width: "100%", height: "100%", resizeMode: "contain" },
-  logoOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.4)",
-    alignItems: "center",
-    justifyContent: "center",
-    opacity: 0,
+  sectionHighlight: {
+    borderColor: `${C.olive}40`,
+    backgroundColor: `${C.olive}08`,
   },
-  restaurantName: {
-    fontSize: 32,
-    fontFamily: theme.fonts.inriaSerif,
-    color: theme.colors.white,
-    textTransform: "uppercase",
-    letterSpacing: -1,
-  },
-  ratingBox: { flexDirection: "row", alignItems: "center", gap: 4 },
-  ratingText: {
-    color: "white",
-    fontSize: 10,
-    fontWeight: "900",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  bullet: { color: "white", opacity: 0.3, fontSize: 12 },
-  categoryText: {
-    color: "white",
-    fontSize: 10,
-    fontWeight: "900",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    opacity: 0.8,
-  },
-  mainContent: { padding: 24, gap: 32 },
-  section: { gap: 16 },
   sectionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 4,
-  },
-  sectionTitleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 8,
-  },
-  cyanDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: theme.colors.accentBlue,
-  },
-  sectionTitleCyan: {
-    fontSize: 10,
-    fontWeight: "900",
-    color: theme.colors.accentBlue,
-    textTransform: "uppercase",
-    letterSpacing: 2,
-  },
-  viewAllText: {
-    fontSize: 10,
-    fontWeight: "900",
-    color: "#2D2D2D",
-    textTransform: "uppercase",
-    textDecorationLine: "underline",
-  },
-  requestsGrid: { gap: 12 },
-  requestCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "rgba(124, 139, 109, 0.05)",
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: "rgba(124, 139, 109, 0.1)",
-    padding: 20,
-  },
-  customerName: {
-    fontSize: 18,
-    fontFamily: theme.fonts.inriaSerif,
-    color: theme.colors.charcoal,
-  },
-  reliabilityBadge: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    marginTop: 4,
-    marginBottom: 2,
-  },
-  reliabilityText: { fontSize: 10, fontWeight: "900" },
-  requestDetails: {
-    fontSize: 10,
-    fontWeight: "900",
-    color: "rgba(45, 45, 45, 0.4)",
-    textTransform: "uppercase",
-    marginTop: 2,
-  },
-  requestActions: { flexDirection: "row", gap: 10 },
-  rejectButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "rgba(239, 68, 68, 0.12)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  confirmButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "#7C8B6D",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  dashboardGrid: { gap: 40 },
-  quickActionButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 16,
-    backgroundColor: theme.colors.white,
-    padding: 20,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    ...theme.shadows.premium,
-  },
-  quickActionIcon: {
-    width: 48,
-    height: 48,
-    backgroundColor: "rgba(45, 45, 45, 0.03)",
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  quickActionText: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#2D2D2D",
-    textTransform: "uppercase",
-    letterSpacing: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
   sectionTitle: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "rgba(45, 45, 45, 0.4)",
+    fontSize: 13,
+    fontWeight: "800",
+    color: C.text,
     textTransform: "uppercase",
-    letterSpacing: 2,
+    letterSpacing: 0.8,
   },
-  addMediaButton: { padding: 10, backgroundColor: "#2D2D2D", borderRadius: 14 },
-  mediaGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  mediaCard: {
-    width: (width - 60) / 2,
-    height: 160,
-    borderRadius: 24,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.05)",
-  },
-  mediaImage: { width: "100%", height: "100%", resizeMode: "cover" },
-  mediaDeleteButton: {
-    position: "absolute",
-    top: 8,
-    right: 8,
-    width: 30,
-    height: 30,
+  sectionBadge: {
+    backgroundColor: C.olive,
     borderRadius: 10,
-    backgroundColor: "#ef4444",
+    minWidth: 20,
+    height: 20,
     alignItems: "center",
     justifyContent: "center",
+    paddingHorizontal: 6,
   },
-  addMediaEmpty: {
-    width: (width - 60) / 2,
-    height: 160,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderStyle: "dashed",
-    borderColor: "rgba(0,0,0,0.1)",
-    backgroundColor: "rgba(0,0,0,0.02)",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  addMediaText: {
-    fontSize: 9,
-    fontWeight: "900",
-    color: "rgba(45, 45, 45, 0.4)",
-    textTransform: "uppercase",
-    textAlign: "center",
-    paddingHorizontal: 8,
-  },
-  addTableButton: { padding: 10, backgroundColor: "#7C8B6D", borderRadius: 14 },
-  tableForm: {
-    backgroundColor: "white",
-    padding: 24,
-    borderRadius: 32,
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.05)",
-    gap: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
-    elevation: 4,
-  },
-  formDataRow: { flexDirection: "row", gap: 12 },
-  formInputWrapper: { flex: 1, gap: 8 },
-  tinyLabel: {
-    fontSize: 9,
-    fontWeight: "900",
-    color: "rgba(45, 45, 45, 0.4)",
-    textTransform: "uppercase",
-    marginLeft: 12,
-    letterSpacing: 1,
-  },
-  formMiniInput: {
-    backgroundColor: "rgba(0,0,0,0.02)",
-    borderRadius: 16,
-    padding: 16,
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#2D2D2D",
-  },
-  formTabRow: {
-    flexDirection: "row",
-    backgroundColor: "rgba(0,0,0,0.02)",
-    borderRadius: 16,
-    padding: 4,
-  },
-  formTab: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: "center",
-    borderRadius: 12,
-  },
-  formTabActive: { backgroundColor: "#7C8B6D" },
-  formTabText: {
-    fontSize: 11,
-    fontWeight: "bold",
-    color: "rgba(45, 45, 45, 0.6)",
-  },
-  formIconTabRow: {
-    flexDirection: "row",
-    backgroundColor: "rgba(0,0,0,0.02)",
-    borderRadius: 16,
-    padding: 4,
-    gap: 4,
-  },
-  formIconTab: {
-    flex: 1,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 12,
-  },
-  formIconTabActive: { backgroundColor: "#2D2D2D" },
-  formActions: { flexDirection: "row", gap: 12, marginTop: 8 },
-  confirmAddTable: {
-    flex: 2,
-    height: 54,
-    backgroundColor: "#2D2D2D",
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  confirmAddTableText: {
-    color: "white",
-    fontSize: 11,
-    fontWeight: "900",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  cancelAddTable: {
-    flex: 1,
-    height: 54,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.1)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cancelAddTableText: {
-    color: "rgba(45, 45, 45, 0.4)",
-    fontSize: 11,
-    fontWeight: "900",
-    textTransform: "uppercase",
-  },
-  tablesGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  emptyGrid: {
-    flex: 1,
-    paddingVertical: 40,
-    backgroundColor: "rgba(0,0,0,0.02)",
-    borderRadius: 32,
-    borderWidth: 2,
-    borderStyle: "dashed",
-    borderColor: "rgba(0,0,0,0.1)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  emptyGridText: {
-    fontSize: 10,
-    fontWeight: "900",
-    color: "rgba(45, 45, 45, 0.4)",
-    textTransform: "uppercase",
-  },
-  tableCard: {
-    width: (width - 78) / 4,
-    aspectRatio: 1,
-    backgroundColor: "white",
-    borderRadius: 20,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.05)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  tableCardHeader: {
-    position: "absolute",
-    top: 8,
-    left: 8,
-    right: 8,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  tableCapacity: {
-    fontSize: 12,
-    fontWeight: "900",
-    color: "#2D2D2D",
-    textAlign: "center",
-  },
-  tableLocation: {
-    fontSize: 7,
-    fontWeight: "900",
-    color: "rgba(45, 45, 45, 0.4)",
-    textTransform: "uppercase",
-    textAlign: "center",
-    marginTop: 2,
-  },
-  resourcePrice: {
-    fontSize: 7,
-    fontWeight: "900",
-    color: "#7C8B6D",
-    textTransform: "uppercase",
-    textAlign: "center",
-    marginTop: 1,
-  },
-  mapCard: {
-    height: 240,
-    borderRadius: 32,
-    overflow: "hidden",
-    backgroundColor: "white",
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.05)",
-  },
-  mapContainer: { flex: 1 },
-  webViewMap: { flex: 1 },
-  editableMapContainer: { height: 240, borderRadius: 20, overflow: "hidden" },
-  editableMapWebView: { flex: 1 },
-  mapInfo: {
-    position: "absolute",
-    bottom: 20,
-    left: 20,
-    right: 20,
-    backgroundColor: "white",
-    padding: 16,
-    borderRadius: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.1,
-    shadowRadius: 15,
-    elevation: 8,
-  },
-  mapAddress: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#2D2D2D",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  mapCoords: {
-    fontSize: 9,
-    fontWeight: "700",
-    color: "rgba(45,45,45,0.4)",
-    marginTop: 2,
-  },
-  cardPanel: {
-    backgroundColor: "white",
-    borderRadius: 28,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.05)",
-    gap: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
-    elevation: 2,
-  },
-  editIconBtn: { padding: 10, backgroundColor: "#2D2D2D", borderRadius: 14 },
-  cardActionRow: { flexDirection: "row", gap: 12, marginTop: 4 },
-  cardCancelBtn: {
-    flex: 1,
-    height: 48,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.1)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cardCancelText: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "rgba(45,45,45,0.4)",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  cardSaveBtn: {
-    flex: 2,
-    height: 48,
-    borderRadius: 16,
-    backgroundColor: "#7C8B6D",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  cardSaveText: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "white",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  phoneDisplayRow: { paddingVertical: 4 },
-  phoneRowBorder: {
-    borderTopWidth: 1,
-    borderTopColor: "rgba(0,0,0,0.05)",
-    paddingTop: 16,
-    marginTop: 4,
-  },
-  phoneLabelCol: { gap: 6 },
-  phoneTypeLabel: {
-    fontSize: 9,
-    fontWeight: "900",
-    color: "rgba(45,45,45,0.4)",
-    textTransform: "uppercase",
-    letterSpacing: 1.5,
-  },
-  phoneValueRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  phoneValue: { fontSize: 16, fontWeight: "700", color: "#2D2D2D" },
-  noSecondaryText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "rgba(45,45,45,0.3)",
-    fontStyle: "italic",
-  },
-  phoneEditRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.02)",
-    borderRadius: 16,
-    gap: 8,
-  },
-  phoneEditInput: {
-    flex: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 16,
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#2D2D2D",
-  },
-  secondaryLabelRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 12,
-  },
-  deleteSecondaryText: {
-    fontSize: 9,
-    fontWeight: "900",
-    color: "#ef4444",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  addSecondaryBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    backgroundColor: "rgba(124,139,109,0.06)",
-    borderRadius: 16,
-    borderWidth: 1,
-    borderStyle: "dashed",
-    borderColor: "rgba(124,139,109,0.3)",
-  },
-  addSecondaryText: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#7C8B6D",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  noFiltersText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "rgba(45,45,45,0.35)",
-    textAlign: "center",
-    paddingVertical: 12,
-    fontStyle: "italic",
-  },
-  filterGroup: { gap: 8 },
-  filterGroupLabel: {
-    fontSize: 9,
-    fontWeight: "900",
-    color: "rgba(45,45,45,0.4)",
-    textTransform: "uppercase",
-    letterSpacing: 1.5,
-  },
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    backgroundColor: "rgba(124,139,109,0.1)",
-    borderWidth: 1,
-    borderColor: "rgba(124,139,109,0.2)",
-  },
-  chipText: { fontSize: 11, fontWeight: "700", color: "#7C8B6D" },
-  filterEditGroupTitle: {
-    fontSize: 12,
-    fontWeight: "900",
-    color: "#2D2D2D",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    marginBottom: 12,
-  },
+  sectionBadgeText: { fontSize: 10, color: "white", fontWeight: "800" },
+  chevron: { fontSize: 10, color: C.textSub },
   subLabel: {
-    fontSize: 9,
-    fontWeight: "900",
-    color: "rgba(45,45,45,0.4)",
+    fontSize: 10,
+    fontWeight: "700",
+    color: C.textSub,
     textTransform: "uppercase",
-    letterSpacing: 2,
+    letterSpacing: 1.5,
     marginBottom: 8,
-    marginTop: 4,
+    marginTop: 12,
+    paddingHorizontal: 16,
   },
-  pillGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 4 },
-  pill: {
+  // FIX: pillGrid/pillRow include horizontal padding so pills don't touch walls
+  pillGrid: {
     flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    flexWrap: "wrap",
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  pillRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  pill: {
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     borderRadius: 12,
     backgroundColor: "rgba(0,0,0,0.04)",
     borderWidth: 1,
     borderColor: "transparent",
   },
-  pillActive: { backgroundColor: "#7C8B6D", borderColor: "#7C8B6D" },
-  pillText: { fontSize: 11, fontWeight: "700", color: "#2D2D2D" },
+  pillActive: { backgroundColor: C.olive, borderColor: C.olive },
+  pillText: { fontSize: 12, fontWeight: "600", color: C.text },
   pillTextActive: { color: "white" },
+  toggleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  toggleLabel: { fontSize: 14, fontWeight: "700", color: C.text },
+  toggleSub: { fontSize: 11, color: C.textSub, marginTop: 2 },
+  footer: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 24,
+  },
+  resetBtn: {
+    flex: 1,
+    paddingVertical: 15,
+    borderRadius: 16,
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.04)",
+  },
+  resetBtnText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: C.textSub,
+    textTransform: "uppercase",
+  },
+  applyBtn: {
+    flex: 2,
+    paddingVertical: 15,
+    borderRadius: 16,
+    alignItems: "center",
+    backgroundColor: C.text,
+  },
+  applyBtnText: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "white",
+    textTransform: "uppercase",
+  },
+});
+
+// ── Main styles ───────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: C.bg },
+  container: { flex: 1, backgroundColor: C.bg },
+
+  header: {
+    paddingHorizontal: 24,
+    marginBottom: 24,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+  },
+  brandText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: C.olive,
+    letterSpacing: 3,
+    textTransform: "uppercase",
+    marginBottom: 6,
+  },
+  greetingText: {
+    fontSize: 34,
+    fontStyle: "italic",
+    fontWeight: "300",
+    lineHeight: 40,
+    color: C.text,
+    fontFamily: "serif",
+  },
+  reliabilityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+    gap: 8,
+  },
+  reliabilityBg: {
+    height: 5,
+    width: 80,
+    backgroundColor: "rgba(0,0,0,0.08)",
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  reliabilityFill: { height: "100%" },
+  reliabilityLabel: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: C.textSub,
+    textTransform: "uppercase",
+    letterSpacing: 1.5,
+  },
+  bellButton: {
+    width: 52,
+    height: 52,
+    backgroundColor: C.olive,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: C.olive,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  bellDot: {
+    position: "absolute",
+    top: -4,
+    right: -4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#f87171",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bellDotText: { fontSize: 9, color: "white", fontWeight: "800" },
+
+  notifBox: {
+    marginHorizontal: 24,
+    marginBottom: 16,
+    backgroundColor: C.white,
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  notifTitle: {
+    fontSize: 10,
+    fontWeight: "900",
+    color: C.olive,
+    letterSpacing: 3,
+    textTransform: "uppercase",
+  },
+  notifEmpty: { fontSize: 13, color: C.textSub, fontStyle: "italic" },
+  notifItem: { marginBottom: 12 },
+  notifName: { fontSize: 14, fontWeight: "600", color: C.text },
+  notifSub: {
+    fontSize: 10,
+    color: "#ef4444",
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+
+  section: { paddingHorizontal: 24, marginBottom: 32 },
+  sectionLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: C.text,
+    letterSpacing: 0.3,
+    marginBottom: 16,
+  },
+  pulseDot: {
+    width: 7,
+    height: 7,
+    backgroundColor: "#ef4444",
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  emptyText: { fontSize: 13, color: C.textSub, fontStyle: "italic" },
+
+  searchRow: {
+    flexDirection: "row",
+    paddingHorizontal: 24,
+    marginBottom: 14,
+    gap: 12,
+  },
+  searchBox: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: C.white,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  searchInput: { flex: 1, fontSize: 14, color: C.text },
+  filterBtn: {
+    width: 52,
+    height: 52,
+    backgroundColor: C.white,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  // ── Category Chips ──
+  // FIX: paddingVertical so shadow of bottom edge isn't clipped
+  categoryChipsRow: { marginBottom: 20 },
+  categoryChipsContainer: {
+    paddingHorizontal: 24,
+    paddingVertical: 6,
+    gap: 8,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  categoryChip: {
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 100,
+    backgroundColor: C.white,
+    borderWidth: 1,
+    borderColor: "rgba(90,90,64,0.15)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  categoryChipActive: {
+    backgroundColor: C.olive,
+    borderColor: C.olive,
+    shadowColor: C.olive,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  categoryChipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: C.textSub,
+    letterSpacing: 0.2,
+  },
+  categoryChipTextActive: { color: "white", fontWeight: "700" },
+
+  chipsRow: { paddingHorizontal: 24, marginBottom: 12 },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: C.olive,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    marginRight: 8,
+  },
+  chipText: { fontSize: 11, fontWeight: "700", color: "white" },
+
+  // ── Nearest Toggle ──
+  nearestCompactRow: {
+    marginHorizontal: 24,
+    marginBottom: 28,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: C.white,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(90,90,64,0.18)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  nearestCompactText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: C.textSub,
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+    flex: 1,
+  },
+
+  // ── Distance Range (Closest to you) ──
+  distanceRow: { marginTop: 16, paddingHorizontal: 4 },
+  distanceHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  distanceLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: C.textSub,
+    textTransform: "uppercase",
+    letterSpacing: 1.5,
+  },
+  distanceValue: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: C.olive,
+  },
+  sliderTrack: {
+    height: 22,
+    justifyContent: "center",
+  },
+  sliderTrackBg: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 8,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(90,90,64,0.15)",
+  },
+  sliderFill: {
+    position: "absolute",
+    left: 0,
+    top: 8,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: C.olive,
+  },
+  sliderThumb: {
+    position: "absolute",
+    top: 1,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.olive,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+
+  recommendCard: {
+    width: width * 0.62,
+    height: 220,
+    borderRadius: 28,
+    overflow: "hidden",
+    backgroundColor: C.cardBg,
+  },
+  recommendImage: { width: "100%", height: "100%", resizeMode: "cover" },
+  recommendOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.32)",
+  },
+  recommendContent: { position: "absolute", bottom: 16, left: 16, right: 48 },
+  recommendTag: {
+    backgroundColor: "rgba(255,255,255,0.2)",
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+    marginBottom: 6,
+  },
+  recommendTagText: { fontSize: 10, color: "white", fontWeight: "600" },
+  recommendName: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "white",
+    marginBottom: 4,
+    fontFamily: "Georgia",
+  },
+  recommendMeta: { fontSize: 11, color: "rgba(255,255,255,0.75)" },
+  recommendFab: {
+    position: "absolute",
+    bottom: 16,
+    right: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: C.olive,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  histCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 12,
+    backgroundColor: C.white,
+    borderRadius: 20,
+    padding: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  histImageBox: {
+    width: 72,
+    height: 72,
+    borderRadius: 16,
+    overflow: "hidden",
+    backgroundColor: C.cardBg,
+  },
+  histImage: { width: "100%", height: "100%", resizeMode: "cover" },
+  histInfo: { flex: 1 },
+  histName: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: C.text,
+    flex: 1,
+    fontFamily: "Georgia",
+  },
+  histPrice: { fontSize: 11, fontWeight: "700", color: C.olive },
+  histMeta: { fontSize: 11, color: C.textSub, marginTop: 4 },
+  histDot: { fontSize: 11, color: C.textSub },
+  histDate: {
+    fontSize: 11,
+    color: C.textSub,
+    marginTop: 4,
+    fontStyle: "italic",
+  },
+
+  activeCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    marginBottom: 12,
+    backgroundColor: C.white,
+    borderRadius: 20,
+    padding: 14,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  activeCardImage: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: C.cardBg,
+  },
+  activeCardName: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: C.text,
+    flex: 1,
+    fontFamily: "Georgia",
+  },
+  activeCardMeta: { fontSize: 11, color: C.textSub },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  statusBadgeText: { fontSize: 10, fontWeight: "700" },
+  cancelBtn: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    backgroundColor: "#fef2f2",
+    borderWidth: 1,
+    borderColor: "#fecaca",
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  cancelBtnText: { fontSize: 11, fontWeight: "700", color: "#ef4444" },
+
+  waitlistCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#fef2f2",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#fecaca",
+  },
+  waitlistName: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: C.text,
+    fontFamily: "Georgia",
+  },
+  waitlistStatus: { fontSize: 12, color: C.textSub, marginTop: 2 },
+  waitlistBtn: {
+    backgroundColor: "#ef4444",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  waitlistBtnText: { fontSize: 11, fontWeight: "800", color: "white" },
+
+  modalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1000,
+    justifyContent: "flex-end",
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+  modalSheet: {
+    backgroundColor: C.white,
+    borderTopLeftRadius: 36,
+    borderTopRightRadius: 36,
+    maxHeight: height * 0.85,
+    paddingBottom: Platform.OS === "ios" ? 88 : 72,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  modalHandle: {
+    width: 36,
+    height: 4,
+    backgroundColor: "rgba(0,0,0,0.1)",
+    borderRadius: 2,
+    alignSelf: "center",
+    marginTop: 12,
+  },
+  modalDragArea: { paddingTop: 12, paddingHorizontal: 24, paddingBottom: 16 },
+  modalHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 8,
+  },
+  activeCountBadge: {
+    backgroundColor: C.olive,
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  activeCountText: { fontSize: 11, color: "white", fontWeight: "800" },
+  modalTitle: { fontSize: 22, fontWeight: "800", color: C.text },
+  filterSubLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: C.textSub,
+    textTransform: "uppercase",
+    letterSpacing: 2,
+    marginBottom: 8,
+    marginTop: 14,
+  },
 });

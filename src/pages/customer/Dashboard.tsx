@@ -17,6 +17,7 @@ import {
   Modal,
   LayoutAnimation,
   UIManager,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
@@ -292,9 +293,16 @@ export default function CustomerDashboard() {
   const [reservations, setReservations] = useState<any[]>([]);
   const [waitlistStatus, setWaitlistStatus] = useState<any>(null);
   const [nearestMode, setNearestMode] = useState(false);
-  // FIX: use a single ref-based lock to prevent double-taps and race conditions
-  const nearestLockRef = useRef(false);
   const [nearestLoading, setNearestLoading] = useState(false);
+  // FIX: distance radius for "Closest to you", 0–10km, defaults to 1.5km every time it's turned on
+  const [nearestRadiusKm, setNearestRadiusKm] = useState(1.5);
+  // FIX: monotonically increasing request id — lets an in-flight (stale) toggle
+  // detect it's been superseded and bail out instead of overwriting newer state.
+  // Replaces the old boolean lock, which is what let the button feel stuck/laggy.
+  const nearestRequestIdRef = useRef(0);
+  // FIX: ignores a duplicate fire from the Switch + its wrapping TouchableOpacity
+  // both triggering on a single physical tap.
+  const lastToggleAtRef = useRef(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
   // FIX: showFilters now controls *mounting*; closing is animated from within
@@ -443,17 +451,39 @@ export default function CustomerDashboard() {
     }, [user, login]),
   );
 
-  // FIX: Completely rewritten toggleNearest — instant response, no double-fire, beautiful alerts
+  // FIX: Completely rewritten toggleNearest.
+  // - The switch/label flip INSTANTLY (optimistic UI) instead of waiting on GPS + network,
+  //   which is what made the button feel laggy/unresponsive before.
+  // - A cached location is only used if it's actually precise; otherwise we properly wait
+  //   for a real GPS fix (generous timeout) instead of silently computing distances from
+  //   a location that could be kilometers off.
+  // - Every async checkpoint compares against nearestRequestIdRef so a stale response from
+  //   an earlier tap can never overwrite state from a newer one (the old race-condition bug).
   const toggleNearest = useCallback(async () => {
-    if (nearestLockRef.current) return;
-    nearestLockRef.current = true;
+    // FIX: swallow a duplicate fire from the Switch and its wrapping TouchableOpacity
+    // triggering on the same physical tap.
+    const now = Date.now();
+    if (now - lastToggleAtRef.current < 400) return;
+    lastToggleAtRef.current = now;
+
+    const requestId = ++nearestRequestIdRef.current;
+    const turningOn = !nearestMode;
+    const isStale = () => requestId !== nearestRequestIdRef.current;
+
+    // Instant feedback — the switch responds the moment you tap it.
+    setNearestMode(turningOn);
     setNearestLoading(true);
+    if (turningOn) {
+      setSearchQuery("");
+      setNearestRadiusKm(1.5);
+    }
 
     try {
-      if (!nearestMode) {
-        setSearchQuery("");
+      if (turningOn) {
         const { status } = await Location.requestForegroundPermissionsAsync();
+        if (isStale()) return;
         if (status !== "granted") {
+          setNearestMode(false);
           showAlert({
             title: t("alerts.location_needed_title"),
             message: t("alerts.location_needed_msg"),
@@ -463,57 +493,93 @@ export default function CustomerDashboard() {
           });
           return;
         }
-        const loc = await Location.getCurrentPositionAsync({});
-        const res = await fetch(
-          getApiUrl(
-            `/api/restaurants/nearest?lat=${loc.coords.latitude}&lng=${loc.coords.longitude}`,
-          ),
-        );
-        const data = await res.json();
-        const list = Array.isArray(data) ? data : [];
-        setRestaurants(list);
-        setNearestMode(true);
-        if (list.length === 0) {
-          showAlert({
-            title: t("alerts.nothing_nearby_title"),
-            message: t("alerts.nothing_nearby_msg"),
-            icon: <MapPin size={28} color={C.textSub} />,
-            iconColor: C.textSub,
-            actions: [
-              {
-                label: t("alerts.show_all"),
-                onPress: async () => {
-                  const r = await fetch(getApiUrl("/api/restaurants"));
-                  const d = await r.json();
-                  const all = d.all || [];
-                  setRestaurants(all);
-                  setDiscoverRestaurants(shuffleArray(all).slice(0, 5));
-                  setNearestMode(false);
-                },
-              },
-            ],
+
+        // FIX: the old fallback accepted a cached location up to 5km off, and
+        // if a fresh fix didn't land within 6s it just kept using that coarse
+        // one — so restaurants could vanish at small radii even though they
+        // were genuinely close, because the distance was computed from the
+        // wrong point. Now: only trust a cached fix if it's actually precise,
+        // and otherwise properly wait for a real one (with a longer window)
+        // instead of settling for a bad guess.
+        const fetchNearbyByCoords = async (coords: {
+          latitude: number;
+          longitude: number;
+        }) => {
+          const res = await fetch(
+            getApiUrl(
+              `/api/restaurants/nearest?lat=${coords.latitude}&lng=${coords.longitude}&radius=10`,
+            ),
+          );
+          const data = await res.json();
+          if (isStale()) return;
+          setRestaurants(Array.isArray(data) ? data : []);
+        };
+
+        let cachedCoords: { latitude: number; longitude: number } | null = null;
+        try {
+          const cached = await Location.getLastKnownPositionAsync({
+            maxAge: 5 * 60 * 1000,
+            requiredAccuracy: 200,
           });
+          if (cached) cachedCoords = cached.coords;
+        } catch {
+          // no precise-enough cached fix — fine, we wait for a fresh one below
+        }
+        if (isStale()) return;
+
+        // Kick off an accurate fix in parallel with showing whatever we have.
+        const freshFixPromise = Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        }).catch(() => null);
+
+        if (cachedCoords) {
+          // Precise cached fix — show results instantly. They'll be silently
+          // corrected below the moment the accurate fix comes back anyway.
+          await fetchNearbyByCoords(cachedCoords);
+          if (isStale()) return;
+          setNearestLoading(false);
+        }
+
+        // Give the accurate fix a generous window — only give up with an
+        // error if we truly have nothing to show at all.
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<null>((resolve) => {
+          timeoutId = setTimeout(
+            () => resolve(null),
+            cachedCoords ? 10000 : 15000,
+          );
+        });
+        const fresh = await Promise.race([freshFixPromise, timeout]);
+        if (timeoutId) clearTimeout(timeoutId);
+        if (isStale()) return;
+
+        if (fresh) {
+          await fetchNearbyByCoords(fresh.coords);
+        } else if (!cachedCoords) {
+          throw new Error("no_location");
         }
       } else {
         const res = await fetch(getApiUrl("/api/restaurants"));
         const data = await res.json();
+        if (isStale()) return;
         const all = data.all || [];
         setRestaurants(all);
         setDiscoverRestaurants(shuffleArray(all).slice(0, 5));
-        setNearestMode(false);
       }
     } catch (err) {
       console.error("Nearest toggle error:", err);
-      showAlert({
-        title: t("alerts.error_title"),
-        message: t("alerts.error_msg"),
-        icon: <AlertCircle size={28} color="#ef4444" />,
-        iconColor: "#ef4444",
-        actions: [{ label: t("alerts.ok"), onPress: () => {} }],
-      });
+      if (!isStale()) {
+        setNearestMode(false);
+        showAlert({
+          title: t("alerts.error_title"),
+          message: t("alerts.error_msg"),
+          icon: <AlertCircle size={28} color="#ef4444" />,
+          iconColor: "#ef4444",
+          actions: [{ label: t("alerts.ok"), onPress: () => {} }],
+        });
+      }
     } finally {
-      nearestLockRef.current = false;
-      setNearestLoading(false);
+      if (!isStale()) setNearestLoading(false);
     }
   }, [nearestMode, t]);
 
@@ -604,8 +670,17 @@ export default function CustomerDashboard() {
     });
   };
 
+  // FIX: when "Closest to you" is on, narrow results down to the selected radius
+  const nearbyRestaurants = nearestMode
+    ? restaurants.filter((r) => {
+        const d =
+          typeof r.dist_km === "number" ? r.dist_km : parseFloat(r.dist_km);
+        return Number.isNaN(d) ? true : d <= nearestRadiusKm;
+      })
+    : restaurants;
+
   // FIX: Hookah — guard against non-array experience_types
-  const categoryFilteredRestaurants = restaurants.filter((r) => {
+  const categoryFilteredRestaurants = nearbyRestaurants.filter((r) => {
     if (activeCategory === "all") return true;
     const name = (r.name || "").toLowerCase();
     const cuisine = (r.cuisine_type || "").toLowerCase();
@@ -696,6 +771,7 @@ export default function CustomerDashboard() {
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   const isFiltering =
+    nearestMode ||
     searchQuery ||
     activeCategory !== "all" ||
     activeFilters.cuisines.length > 0 ||
@@ -1035,13 +1111,12 @@ export default function CustomerDashboard() {
           </ScrollView>
         )}
 
-        {/* ── Nearest You — Compact Toggle ── */}
-        {/* FIX: disabled state while loading to prevent double-tap lag */}
+        {/* ── Closest to you — Compact Toggle ── */}
+        {/* FIX: switch/label now flip the instant you tap — no waiting on GPS or network */}
         <TouchableOpacity
           onPress={toggleNearest}
-          disabled={nearestLoading}
           activeOpacity={0.75}
-          style={[styles.nearestCompactRow, nearestLoading && { opacity: 0.6 }]}
+          style={styles.nearestCompactRow}
         >
           <MapPin
             size={13}
@@ -1054,16 +1129,18 @@ export default function CustomerDashboard() {
               nearestMode && { color: C.olive },
             ]}
           >
-            {nearestLoading
-              ? t("dashboard.locating")
-              : nearestMode
-                ? t("dashboard.nearest_you")
-                : t("dashboard.nearest_you")}
+            {t("dashboard.closest_to_you")}
           </Text>
+          {nearestLoading && (
+            <ActivityIndicator
+              size="small"
+              color={C.olive}
+              style={{ marginRight: 4 }}
+            />
+          )}
           <Switch
             value={nearestMode}
             onValueChange={toggleNearest}
-            disabled={nearestLoading}
             trackColor={{ false: "rgba(90,90,64,0.15)", true: `${C.olive}80` }}
             thumbColor={nearestMode ? C.olive : C.oliveLight}
             style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }}
@@ -1093,6 +1170,29 @@ export default function CustomerDashboard() {
               </Text>
             )}
           </ScrollView>
+
+          {/* FIX: distance range — only shown while "Closest to you" is on */}
+          {nearestMode && (
+            <View style={styles.distanceRow}>
+              <View style={styles.distanceHeaderRow}>
+                <Text style={styles.distanceLabel}>
+                  {t("dashboard.distance")}
+                </Text>
+                <Text style={styles.distanceValue}>
+                  {distanceUnit === "mi"
+                    ? `${(nearestRadiusKm * 0.621371).toFixed(1)} mi`
+                    : `${nearestRadiusKm.toFixed(1)} km`}
+                </Text>
+              </View>
+              <DistanceSlider
+                value={nearestRadiusKm}
+                onChange={setNearestRadiusKm}
+                min={0}
+                max={10}
+                step={0.5}
+              />
+            </View>
+          )}
         </View>
 
         {/* ── Category Chips ── */}
@@ -1115,11 +1215,11 @@ export default function CustomerDashboard() {
 
         {/* ── Discover (random 5) or filtered results ── */}
         {isFiltering
-          ? displayRestaurants.length > 0 && (
+          ? (displayRestaurants.length > 0 || nearestMode) && (
               <View style={styles.section}>
                 <Text style={styles.sectionLabel}>
                   {nearestMode
-                    ? t("dashboard.nearest_you")
+                    ? t("dashboard.closest_to_you")
                     : searchQuery
                       ? `${t("dashboard.searching")} "${searchQuery}"`
                       : activeCategory !== "all"
@@ -1129,17 +1229,25 @@ export default function CustomerDashboard() {
                           )
                         : t("dashboard.discover")}
                 </Text>
-                {displayRestaurants.map((r) => (
-                  <HistoryCard
-                    key={r.id}
-                    restaurant={{
-                      ...r,
-                      date: r.cuisine_type || t("dashboard.artisanal"),
-                    }}
-                    t={t}
-                    navigation={navigation}
-                  />
-                ))}
+                {displayRestaurants.length > 0 ? (
+                  displayRestaurants.map((r) => (
+                    <HistoryCard
+                      key={r.id}
+                      restaurant={{
+                        ...r,
+                        date: r.cuisine_type || t("dashboard.artisanal"),
+                      }}
+                      t={t}
+                      navigation={navigation}
+                    />
+                  ))
+                ) : (
+                  // FIX: previously rendered nothing at all when the current
+                  // distance radius had zero matches — a blank, confusing screen.
+                  <Text style={styles.emptyText}>
+                    {t("dashboard.no_tables_found")}
+                  </Text>
+                )}
               </View>
             )
           : filteredDiscover.length > 0 && (
@@ -1359,6 +1467,80 @@ function ActiveReservationCard({ reservation, t, navigation, onCancel }: any) {
         </TouchableOpacity>
       </View>
     </TouchableOpacity>
+  );
+}
+
+// FIX: lightweight custom slider (avoids pulling in a native slider dependency).
+// The PanResponder reads trackWidth/onChange from refs, not from closed-over
+// props, so it never goes stale — dragging always reflects the live value.
+function DistanceSlider({
+  value,
+  onChange,
+  min = 0,
+  max = 10,
+  step = 0.5,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const trackWidthRef = useRef(0);
+  const onChangeRef = useRef(onChange);
+  const THUMB = 22;
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  const valueFromX = (x: number) => {
+    const tw = trackWidthRef.current;
+    if (tw <= 0) return value;
+    const ratio = Math.min(1, Math.max(0, x / tw));
+    const raw = min + ratio * (max - min);
+    const stepped = Math.round(raw / step) * step;
+    return Math.min(max, Math.max(min, Math.round(stepped * 10) / 10));
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        onChangeRef.current(valueFromX(evt.nativeEvent.locationX));
+      },
+      onPanResponderMove: (evt) => {
+        onChangeRef.current(valueFromX(evt.nativeEvent.locationX));
+      },
+    }),
+  ).current;
+
+  const ratio = max > min ? (value - min) / (max - min) : 0;
+  const thumbLeft = Math.max(
+    0,
+    Math.min(trackWidth - THUMB, ratio * trackWidth - THUMB / 2),
+  );
+
+  return (
+    <View
+      style={styles.sliderTrack}
+      onLayout={(e) => {
+        trackWidthRef.current = e.nativeEvent.layout.width;
+        setTrackWidth(e.nativeEvent.layout.width);
+      }}
+      {...panResponder.panHandlers}
+    >
+      <View style={styles.sliderTrackBg} />
+      <View style={[styles.sliderFill, { width: `${ratio * 100}%` }]} />
+      {trackWidth > 0 && (
+        <View
+          pointerEvents="none"
+          style={[styles.sliderThumb, { left: thumbLeft }]}
+        />
+      )}
+    </View>
   );
 }
 
@@ -2220,6 +2402,63 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 1.2,
     flex: 1,
+  },
+
+  // ── Distance Range (Closest to you) ──
+  distanceRow: { marginTop: 16, paddingHorizontal: 4 },
+  distanceHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  distanceLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: C.textSub,
+    textTransform: "uppercase",
+    letterSpacing: 1.5,
+  },
+  distanceValue: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: C.olive,
+  },
+  sliderTrack: {
+    height: 22,
+    justifyContent: "center",
+  },
+  sliderTrackBg: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: 8,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(90,90,64,0.15)",
+  },
+  sliderFill: {
+    position: "absolute",
+    left: 0,
+    top: 8,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: C.olive,
+  },
+  sliderThumb: {
+    position: "absolute",
+    top: 1,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.olive,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
 
   recommendCard: {
