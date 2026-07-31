@@ -671,12 +671,30 @@ export default function CustomerDashboard() {
   };
 
   // FIX: when "Closest to you" is on, narrow results down to the selected radius
+  // AND sort them nearest-to-farthest. Previously this only filtered — it never
+  // sorted — so restaurants inside the radius appeared in whatever order the
+  // API returned them, not by distance.
   const nearbyRestaurants = nearestMode
-    ? restaurants.filter((r) => {
-        const d =
-          typeof r.dist_km === "number" ? r.dist_km : parseFloat(r.dist_km);
-        return Number.isNaN(d) ? true : d <= nearestRadiusKm;
-      })
+    ? restaurants
+        .filter((r) => {
+          const d =
+            typeof r.dist_km === "number" ? r.dist_km : parseFloat(r.dist_km);
+          return Number.isNaN(d) ? true : d <= nearestRadiusKm;
+        })
+        .sort((a, b) => {
+          const da =
+            typeof a.dist_km === "number" ? a.dist_km : parseFloat(a.dist_km);
+          const db =
+            typeof b.dist_km === "number" ? b.dist_km : parseFloat(b.dist_km);
+          const aUnknown = Number.isNaN(da);
+          const bUnknown = Number.isNaN(db);
+          // Restaurants with no usable distance sort to the end instead of
+          // interleaving randomly with ones that do have a distance.
+          if (aUnknown && bUnknown) return 0;
+          if (aUnknown) return 1;
+          if (bUnknown) return -1;
+          return da - db;
+        })
     : restaurants;
 
   // FIX: Hookah — guard against non-array experience_types
