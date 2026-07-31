@@ -303,12 +303,13 @@ export default function OwnerDashboard() {
       // FIX: fall back to the shared default point instead of `null` so the
       // map (and a subsequent Save) always has a concrete coordinate, even
       // for a restaurant that has never had its location set.
-      setLocationLat(
-        restaurant.latitude ? parseFloat(restaurant.latitude) : DEFAULT_LAT,
-      );
-      setLocationLng(
-        restaurant.longitude ? parseFloat(restaurant.longitude) : DEFAULT_LNG,
-      );
+      // FIX: the API/DB field is `lat`/`lng`, not `latitude`/`longitude` —
+      // reading the wrong key meant this was always undefined, so the pin
+      // silently reset to the default point every time Edit Location was
+      // opened, and hitting Save without moving the pin overwrote the
+      // restaurant's real coordinates with the default ones.
+      setLocationLat(restaurant.lat ? parseFloat(restaurant.lat) : DEFAULT_LAT);
+      setLocationLng(restaurant.lng ? parseFloat(restaurant.lng) : DEFAULT_LNG);
       setFilterExperienceTypes(restaurant.experience_types || []);
       setFilterAmenities(restaurant.amenities || []);
       setFilterMoods(restaurant.moods || []);
@@ -437,12 +438,8 @@ export default function OwnerDashboard() {
 
   const handleCancelLocation = () => {
     setLocationAddress(restaurant?.location || "");
-    setLocationLat(
-      restaurant?.latitude ? parseFloat(restaurant.latitude) : DEFAULT_LAT,
-    );
-    setLocationLng(
-      restaurant?.longitude ? parseFloat(restaurant.longitude) : DEFAULT_LNG,
-    );
+    setLocationLat(restaurant?.lat ? parseFloat(restaurant.lat) : DEFAULT_LAT);
+    setLocationLng(restaurant?.lng ? parseFloat(restaurant.lng) : DEFAULT_LNG);
     setEditingLocation(false);
   };
 
@@ -1945,10 +1942,10 @@ export default function OwnerDashboard() {
                     <Text style={styles.mapAddress} numberOfLines={1}>
                       {restaurant.location}
                     </Text>
-                    {!!restaurant.latitude && !!restaurant.longitude && (
+                    {!!restaurant.lat && !!restaurant.lng && (
                       <Text style={styles.mapCoords}>
-                        {Number(restaurant.latitude).toFixed(5)},{" "}
-                        {Number(restaurant.longitude).toFixed(5)}
+                        {Number(restaurant.lat).toFixed(5)},{" "}
+                        {Number(restaurant.lng).toFixed(5)}
                       </Text>
                     )}
                   </View>
