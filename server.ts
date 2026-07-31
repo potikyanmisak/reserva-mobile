@@ -1162,6 +1162,8 @@ async function startServer() {
         description,
         cuisine_type,
         location,
+        latitude,
+        longitude,
         logo_url,
         open_time,
         close_time,
@@ -1181,8 +1183,13 @@ async function startServer() {
       const resolvedStatus =
         req.user.role === "admin" ? status || "approved" : "pending";
       try {
+        // FIX: lat/lng are now stored at creation time. Previously this INSERT
+        // never touched lat/lng at all, so every new restaurant silently
+        // defaulted to (0, 0) — thousands of km from any real customer — and
+        // was invisible to distance-based search until (if ever) the owner
+        // separately opened "Edit Location" and re-saved it later.
         const stmt = db.prepare(
-          `INSERT INTO restaurants (owner_id, name, description, cuisine_type, location, logo_url, open_time, close_time, is_recommended, outdoor_seating, min_price, max_price, phone_number, experience_types, amenities, moods, deposit_amount, cancellation_policy_hours, status, is_24_hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO restaurants (owner_id, name, description, cuisine_type, location, lat, lng, logo_url, open_time, close_time, is_recommended, outdoor_seating, min_price, max_price, phone_number, experience_types, amenities, moods, deposit_amount, cancellation_policy_hours, status, is_24_hours) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         const result = stmt.run(
           req.user.id,
@@ -1190,6 +1197,8 @@ async function startServer() {
           description ?? null,
           cuisine_type || "General",
           location ?? null,
+          latitude ?? 0,
+          longitude ?? 0,
           logo_url,
           open_time || "09:00",
           close_time || "22:00",
