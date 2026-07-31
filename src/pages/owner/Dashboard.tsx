@@ -47,6 +47,13 @@ const { width } = Dimensions.get("window");
 
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY ?? "";
 
+// Default map center used whenever a restaurant has no confirmed coordinates
+// yet. Keeping this as a single constant means the map's initial pin, the
+// state defaults, and the save payload can never drift out of sync with
+// each other (which was the root of the location bug).
+const DEFAULT_LAT = 40.1792;
+const DEFAULT_LNG = 44.4991;
+
 function isValidPhone(phone: string): boolean {
   return /^\+?[\d\s\-().]{7,20}$/.test(phone.trim());
 }
@@ -262,8 +269,16 @@ export default function OwnerDashboard() {
 
   const [editingLocation, setEditingLocation] = useState(false);
   const [locationAddress, setLocationAddress] = useState("");
-  const [locationLat, setLocationLat] = useState<number | null>(null);
-  const [locationLng, setLocationLng] = useState<number | null>(null);
+  // FIX: these used to default to `null` whenever the restaurant had no
+  // saved coordinates yet (e.g. brand-new restaurants, which are created
+  // with lat/lng = 0 and never touched). That let an owner type an address,
+  // hit Save without ever touching the map, and silently keep the
+  // restaurant's real coordinates at 0,0 forever (see handleSaveLocation).
+  // Defaulting to the same point the map actually shows means Save always
+  // has real numbers to send, and what the owner sees on the map is exactly
+  // what gets persisted.
+  const [locationLat, setLocationLat] = useState<number>(DEFAULT_LAT);
+  const [locationLng, setLocationLng] = useState<number>(DEFAULT_LNG);
   const [savingLocation, setSavingLocation] = useState(false);
 
   const [editingFilters, setEditingFilters] = useState(false);
@@ -285,11 +300,14 @@ export default function OwnerDashboard() {
       setSecondaryPhone(restaurant.secondary_phone || "");
       setShowSecondaryPhone(!!restaurant.secondary_phone);
       setLocationAddress(restaurant.location || "");
+      // FIX: fall back to the shared default point instead of `null` so the
+      // map (and a subsequent Save) always has a concrete coordinate, even
+      // for a restaurant that has never had its location set.
       setLocationLat(
-        restaurant.latitude ? parseFloat(restaurant.latitude) : null,
+        restaurant.latitude ? parseFloat(restaurant.latitude) : DEFAULT_LAT,
       );
       setLocationLng(
-        restaurant.longitude ? parseFloat(restaurant.longitude) : null,
+        restaurant.longitude ? parseFloat(restaurant.longitude) : DEFAULT_LNG,
       );
       setFilterExperienceTypes(restaurant.experience_types || []);
       setFilterAmenities(restaurant.amenities || []);
@@ -376,9 +394,19 @@ export default function OwnerDashboard() {
     }
     setSavingLocation(true);
     try {
-      const body: any = { location: locationAddress };
-      if (locationLat !== null) body.latitude = locationLat;
-      if (locationLng !== null) body.longitude = locationLng;
+      // FIX: latitude/longitude are now ALWAYS included. Previously these
+      // were only added to the body `if (locationLat !== null)` — but since
+      // locationLat/Lng started life as `null` for any restaurant without
+      // saved coordinates, an owner who only typed an address and never
+      // dragged the map pin would send a body with no latitude/longitude at
+      // all. The server's COALESCE(?, lat) then quietly kept the existing
+      // (often 0,0 default) value, so the restaurant was permanently
+      // invisible to distance-based search with no error anywhere.
+      const body: any = {
+        location: locationAddress,
+        latitude: locationLat,
+        longitude: locationLng,
+      };
       const res = await fetch(getApiUrl(`/api/restaurants/${restaurant.id}`), {
         method: "PATCH",
         headers: {
@@ -410,10 +438,10 @@ export default function OwnerDashboard() {
   const handleCancelLocation = () => {
     setLocationAddress(restaurant?.location || "");
     setLocationLat(
-      restaurant?.latitude ? parseFloat(restaurant.latitude) : null,
+      restaurant?.latitude ? parseFloat(restaurant.latitude) : DEFAULT_LAT,
     );
     setLocationLng(
-      restaurant?.longitude ? parseFloat(restaurant.longitude) : null,
+      restaurant?.longitude ? parseFloat(restaurant.longitude) : DEFAULT_LNG,
     );
     setEditingLocation(false);
   };
@@ -1950,10 +1978,11 @@ export default function OwnerDashboard() {
                         keyboardType="numeric"
                         placeholder={t("owner_dashboard.lat_placeholder")}
                         placeholderTextColor="rgba(45,45,45,0.3)"
-                        value={locationLat !== null ? String(locationLat) : ""}
-                        onChangeText={(text) =>
-                          setLocationLat(text ? parseFloat(text) : null)
-                        }
+                        value={String(locationLat)}
+                        onChangeText={(text) => {
+                          const parsed = parseFloat(text);
+                          if (!Number.isNaN(parsed)) setLocationLat(parsed);
+                        }}
                       />
                     </View>
                     <View style={styles.formInputWrapper}>
@@ -1965,10 +1994,11 @@ export default function OwnerDashboard() {
                         keyboardType="numeric"
                         placeholder={t("owner_dashboard.lng_placeholder")}
                         placeholderTextColor="rgba(45,45,45,0.3)"
-                        value={locationLng !== null ? String(locationLng) : ""}
-                        onChangeText={(text) =>
-                          setLocationLng(text ? parseFloat(text) : null)
-                        }
+                        value={String(locationLng)}
+                        onChangeText={(text) => {
+                          const parsed = parseFloat(text);
+                          if (!Number.isNaN(parsed)) setLocationLng(parsed);
+                        }}
                       />
                     </View>
                   </View>
@@ -1984,8 +2014,8 @@ export default function OwnerDashboard() {
                       {t("owner_dashboard.tap_drag_pin")}
                     </Text>
                     <EditableLocationMap
-                      lat={locationLat ?? 40.1792}
-                      lng={locationLng ?? 44.4991}
+                      lat={locationLat}
+                      lng={locationLng}
                       onLocationChange={(lat, lng) => {
                         setLocationLat(parseFloat(lat.toFixed(6)));
                         setLocationLng(parseFloat(lng.toFixed(6)));
