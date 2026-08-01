@@ -10,6 +10,7 @@ import {
   Alert,
   ActivityIndicator,
 } from "react-native";
+import { WebView } from "react-native-webview";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
 import { useAuth } from "../../lib/AuthContext";
@@ -27,6 +28,93 @@ import { CUISINES } from "../../lib/filterOptions";
 
 type ApplicationStatus = null | "pending" | false;
 
+// Same default drop point used in the owner dashboard's location editor,
+// so a brand-new restaurant's pin starts in the same place an owner would
+// see if they opened Edit Location afterward.
+const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY ?? "";
+const DEFAULT_LAT = 40.1792;
+const DEFAULT_LNG = 44.4991;
+
+function EditableLocationMap({
+  lat,
+  lng,
+  onLocationChange,
+}: {
+  lat: number;
+  lng: number;
+  onLocationChange: (lat: number, lng: number) => void;
+}) {
+  const mapHtml = `<!DOCTYPE html><html><head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>body,html{height:100%;margin:0;padding:0;}#map{height:100%;}</style>
+  </head><body>
+    <div id="map"></div>
+    <script>
+      var initLat = ${lat};
+      var initLng = ${lng};
+      var map, marker;
+
+      function sendPos(lat, lng) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'markerMoved', lat: lat, lng: lng }));
+      }
+
+      function initMap() {
+        var latLng = { lat: initLat, lng: initLng };
+        map = new google.maps.Map(document.getElementById('map'), {
+          center: latLng,
+          zoom: 15,
+          disableDefaultUI: true,
+          zoomControl: true,
+        });
+        marker = new google.maps.Marker({
+          position: latLng,
+          map: map,
+          draggable: true,
+        });
+        marker.addListener('dragend', function(e) {
+          sendPos(e.latLng.lat(), e.latLng.lng());
+        });
+        map.addListener('click', function(e) {
+          marker.setPosition(e.latLng);
+          sendPos(e.latLng.lat(), e.latLng.lng());
+        });
+      }
+    </script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&callback=initMap" async defer></script>
+  </body></html>`;
+
+  return (
+    <View style={mapPickerStyles.editableMapContainer}>
+      <WebView
+        originWhitelist={["*"]}
+        source={{ html: mapHtml }}
+        style={mapPickerStyles.editableMapWebView}
+        javaScriptEnabled
+        domStorageEnabled
+        scrollEnabled={false}
+        onMessage={(event) => {
+          try {
+            const data = JSON.parse(event.nativeEvent.data);
+            if (data.type === "markerMoved") {
+              onLocationChange(data.lat, data.lng);
+            }
+          } catch {}
+        }}
+      />
+    </View>
+  );
+}
+
+const mapPickerStyles = StyleSheet.create({
+  editableMapContainer: {
+    height: 220,
+    borderRadius: 14,
+    overflow: "hidden",
+    marginTop: 10,
+  },
+  editableMapWebView: { flex: 1 },
+});
+
 interface OwnerApplicationProps {
   applicationStatus: ApplicationStatus;
   onSubmitted: () => void;
@@ -43,6 +131,8 @@ export default function OwnerApplication({
 
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [locationLat, setLocationLat] = useState<number>(DEFAULT_LAT);
+  const [locationLng, setLocationLng] = useState<number>(DEFAULT_LNG);
   const [formData, setFormData] = useState<any>({
     name: "",
     description: "",
@@ -100,7 +190,12 @@ export default function OwnerApplication({
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ ...formData, status: "pending" }),
+        body: JSON.stringify({
+          ...formData,
+          latitude: locationLat,
+          longitude: locationLng,
+          status: "pending",
+        }),
       });
       if (!res.ok) throw new Error("Failed to create restaurant");
       setShowForm(false);
@@ -338,6 +433,17 @@ export default function OwnerApplication({
                 setFormData({ ...formData, location: text })
               }
             />
+            <Text style={styles.mapHelperText}>
+              {t("owner_dashboard.drop_pin_helper")}
+            </Text>
+            <EditableLocationMap
+              lat={locationLat}
+              lng={locationLng}
+              onLocationChange={(lat, lng) => {
+                setLocationLat(lat);
+                setLocationLng(lng);
+              }}
+            />
           </View>
 
           <View style={styles.row}>
@@ -514,6 +620,11 @@ export default function OwnerApplication({
 }
 
 const styles = StyleSheet.create({
+  mapHelperText: {
+    fontSize: 12,
+    color: "rgba(45, 45, 45, 0.55)",
+    marginTop: 8,
+  },
   centeredContainer: {
     flex: 1,
     backgroundColor: "#FDFCFB",

@@ -65,9 +65,9 @@ if (
 function getPriceSymbol(min_price?: number, max_price?: number): string {
   const avg = ((min_price ?? 0) + (max_price ?? 0)) / 2;
   if (!avg) return "$$";
-  if (avg < 5000) return "$";
-  if (avg < 15000) return "$$";
-  if (avg < 30000) return "$$$";
+  if (avg <= 4000) return "$";
+  if (avg <= 7000) return "$$";
+  if (avg <= 12000) return "$$$";
   return "$$$$";
 }
 
@@ -292,6 +292,11 @@ export default function CustomerDashboard() {
   const [recommended, setRecommended] = useState<any[]>([]);
   const [reservations, setReservations] = useState<any[]>([]);
   const [waitlistStatus, setWaitlistStatus] = useState<any>(null);
+  // Real per-restaurant distances (km), keyed by restaurant id. Populated
+  // silently on app open from a background location fetch, independent of
+  // "Closest to you" mode, so Discover/History cards can show a real
+  // distance instead of a hardcoded placeholder.
+  const [distanceById, setDistanceById] = useState<Record<number, number>>({});
   const [nearestMode, setNearestMode] = useState(false);
   const [nearestLoading, setNearestLoading] = useState(false);
   // FIX: distance radius for "Closest to you", 0–10km, defaults to 1.5km every time it's turned on
@@ -305,6 +310,12 @@ export default function CustomerDashboard() {
   const lastToggleAtRef = useRef(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
+  // FIX: notifPanelMounted controls actual mounting; showNotifications now
+  // only tracks open/closed intent. This lets the panel fade+slide in on
+  // open and fade+slide out on close instead of popping instantly.
+  const [notifPanelMounted, setNotifPanelMounted] = useState(false);
+  const notifOpacity = useRef(new Animated.Value(0)).current;
+  const notifTranslateY = useRef(new Animated.Value(-8)).current;
   // FIX: showFilters now controls *mounting*; closing is animated from within
   // FilterModal itself, which calls onClose after the slide-out finishes.
   const [showFilters, setShowFilters] = useState(false);
@@ -324,6 +335,48 @@ export default function CustomerDashboard() {
   const showAlert = (config: Omit<typeof customAlert, "visible">) =>
     setCustomAlert({ ...config, visible: true });
   const hideAlert = () => setCustomAlert((p) => ({ ...p, visible: false }));
+
+  // FIX: replaces the old instant `setShowNotifications(!showNotifications)`.
+  // Opening mounts the panel and animates it in right away; closing animates
+  // it out first and only unmounts once the animation finishes, so the bell
+  // never feels like it's snapping/lagging.
+  const toggleNotifications = useCallback(() => {
+    if (!showNotifications) {
+      setNotifPanelMounted(true);
+      setShowNotifications(true);
+      notifOpacity.setValue(0);
+      notifTranslateY.setValue(-8);
+      Animated.parallel([
+        Animated.timing(notifOpacity, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+        Animated.spring(notifTranslateY, {
+          toValue: 0,
+          useNativeDriver: true,
+          tension: 120,
+          friction: 14,
+        }),
+      ]).start();
+    } else {
+      setShowNotifications(false);
+      Animated.parallel([
+        Animated.timing(notifOpacity, {
+          toValue: 0,
+          duration: 150,
+          useNativeDriver: true,
+        }),
+        Animated.timing(notifTranslateY, {
+          toValue: -8,
+          duration: 150,
+          useNativeDriver: true,
+        }),
+      ]).start(({ finished }) => {
+        if (finished) setNotifPanelMounted(false);
+      });
+    }
+  }, [showNotifications]);
 
   const [activeFilters, setActiveFilters] = useState<ActiveFilters>({
     cuisines: [],
@@ -364,6 +417,59 @@ export default function CustomerDashboard() {
       })
       .catch((err) => console.error("Fetch Restaurants Error:", err));
   }, []);
+
+  // Silently populate real distances for every restaurant, independent of
+  // "Closest to you" mode, so Discover/History cards can show an accurate
+  // distance instead of the old hardcoded 2.4km placeholder. This never
+  // prompts the user beyond the standard OS location permission dialog and
+  // never blocks rendering — if it fails or permission is denied, cards
+  // simply omit the distance line instead of showing a wrong number.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (cancelled || status !== "granted") return;
+        const pos =
+          (await Location.getLastKnownPositionAsync({
+            maxAge: 10 * 60 * 1000,
+          }).catch(() => null)) ||
+          (await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          }).catch(() => null));
+        if (cancelled || !pos) return;
+        const res = await fetch(
+          getApiUrl(
+            `/api/restaurants/nearest?lat=${pos.coords.latitude}&lng=${pos.coords.longitude}&radius=20000`,
+          ),
+        );
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data)) return;
+        const map: Record<number, number> = {};
+        data.forEach((r: any) => {
+          if (typeof r.dist_km === "number") map[r.id] = r.dist_km;
+        });
+        setDistanceById(map);
+      } catch (err) {
+        console.error("Background distance fetch error:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Merges the silently-fetched real distance into a restaurant list. Used
+  // for anything NOT already sourced from the "Closest to you" nearest-fetch
+  // (which already carries a real, correctly-computed dist_km).
+  const withLiveDistance = useCallback(
+    (list: any[]) =>
+      list.map((r) => ({
+        ...r,
+        dist_km: distanceById[r.id],
+      })),
+    [distanceById],
+  );
 
   useEffect(() => {
     if (!nearestMode) fetchRestaurants();
@@ -617,7 +723,7 @@ export default function CustomerDashboard() {
         cover_image_url: fullRestaurant?.cover_image_url || null,
         rating: res.rating || 4.6,
         location: res.location || "New York",
-        dist_km: res.dist_km || 2.4,
+        dist_km: distanceById[res.restaurant_id],
         date: new Date(res.date).toLocaleDateString(),
       };
     })
@@ -695,7 +801,7 @@ export default function CustomerDashboard() {
           if (bUnknown) return -1;
           return da - db;
         })
-    : restaurants;
+    : withLiveDistance(restaurants);
 
   // FIX: Hookah — guard against non-array experience_types
   const categoryFilteredRestaurants = nearbyRestaurants.filter((r) => {
@@ -777,7 +883,7 @@ export default function CustomerDashboard() {
 
   const displayRestaurants = applyFilters(categoryFilteredRestaurants);
   // FIX: discover uses its own random-5 list (also filtered)
-  const filteredDiscover = applyFilters(discoverRestaurants);
+  const filteredDiscover = applyFilters(withLiveDistance(discoverRestaurants));
 
   const getTimeOfDay = () => {
     const h = new Date().getHours();
@@ -863,7 +969,7 @@ export default function CustomerDashboard() {
           </View>
 
           <TouchableOpacity
-            onPress={() => setShowNotifications(!showNotifications)}
+            onPress={toggleNotifications}
             style={styles.bellButton}
           >
             <Bell size={20} strokeWidth={1.5} color="white" />
@@ -876,8 +982,16 @@ export default function CustomerDashboard() {
         </View>
 
         {/* ── Notifications ── */}
-        {showNotifications && (
-          <View style={styles.notifBox}>
+        {notifPanelMounted && (
+          <Animated.View
+            style={[
+              styles.notifBox,
+              {
+                opacity: notifOpacity,
+                transform: [{ translateY: notifTranslateY }],
+              },
+            ]}
+          >
             <View
               style={{
                 flexDirection: "row",
@@ -891,13 +1005,41 @@ export default function CustomerDashboard() {
               </Text>
               {notifications.some((n) => !n.read) && (
                 <TouchableOpacity
-                  onPress={async () => {
-                    const token = await AsyncStorage.getItem("reserva_token");
-                    await fetch(getApiUrl("/api/notifications/read-all"), {
-                      method: "POST",
-                      headers: { Authorization: `Bearer ${token}` },
-                    });
-                    fetchNotifications();
+                  onPress={() => {
+                    // FIX: optimistic — flip everything to read instantly and
+                    // animate the unread highlight away, instead of waiting
+                    // on the network round trip before anything changes.
+                    const previous = notifications;
+                    LayoutAnimation.configureNext(
+                      LayoutAnimation.create(200, "easeInEaseOut", "opacity"),
+                    );
+                    setNotifications((prev) =>
+                      prev.map((n) => ({ ...n, read: true })),
+                    );
+                    (async () => {
+                      try {
+                        const token =
+                          await AsyncStorage.getItem("reserva_token");
+                        const res = await fetch(
+                          getApiUrl("/api/notifications/read-all"),
+                          {
+                            method: "POST",
+                            headers: { Authorization: `Bearer ${token}` },
+                          },
+                        );
+                        if (!res.ok) throw new Error("failed");
+                      } catch (err) {
+                        console.error("Mark all read error:", err);
+                        LayoutAnimation.configureNext(
+                          LayoutAnimation.create(
+                            200,
+                            "easeInEaseOut",
+                            "opacity",
+                          ),
+                        );
+                        setNotifications(previous);
+                      }
+                    })();
                   }}
                 >
                   <Text
@@ -916,18 +1058,47 @@ export default function CustomerDashboard() {
               notifications.map((notif) => (
                 <TouchableOpacity
                   key={notif.id}
-                  onPress={async () => {
-                    if (!notif.read) {
-                      const token = await AsyncStorage.getItem("reserva_token");
-                      await fetch(
-                        getApiUrl(`/api/notifications/${notif.id}/read`),
-                        {
-                          method: "POST",
-                          headers: { Authorization: `Bearer ${token}` },
-                        },
-                      );
-                      fetchNotifications();
-                    }
+                  onPress={() => {
+                    if (notif.read) return;
+                    // FIX: optimistic — mark this one read instantly and
+                    // animate its highlight away, then sync in the
+                    // background instead of blocking on the request.
+                    LayoutAnimation.configureNext(
+                      LayoutAnimation.create(200, "easeInEaseOut", "opacity"),
+                    );
+                    setNotifications((prev) =>
+                      prev.map((n) =>
+                        n.id === notif.id ? { ...n, read: true } : n,
+                      ),
+                    );
+                    (async () => {
+                      try {
+                        const token =
+                          await AsyncStorage.getItem("reserva_token");
+                        const res = await fetch(
+                          getApiUrl(`/api/notifications/${notif.id}/read`),
+                          {
+                            method: "POST",
+                            headers: { Authorization: `Bearer ${token}` },
+                          },
+                        );
+                        if (!res.ok) throw new Error("failed");
+                      } catch (err) {
+                        console.error("Mark read error:", err);
+                        LayoutAnimation.configureNext(
+                          LayoutAnimation.create(
+                            200,
+                            "easeInEaseOut",
+                            "opacity",
+                          ),
+                        );
+                        setNotifications((prev) =>
+                          prev.map((n) =>
+                            n.id === notif.id ? { ...n, read: false } : n,
+                          ),
+                        );
+                      }
+                    })();
                   }}
                   style={[
                     styles.notifItem,
@@ -945,7 +1116,7 @@ export default function CustomerDashboard() {
                 </TouchableOpacity>
               ))
             )}
-          </View>
+          </Animated.View>
         )}
 
         {/* ── Waitlist ── */}
@@ -1174,7 +1345,7 @@ export default function CustomerDashboard() {
             contentContainerStyle={{ gap: 16, paddingRight: 4 }}
           >
             {recommended.length > 0 ? (
-              recommended.map((r) => (
+              withLiveDistance(recommended).map((r) => (
                 <RecommendCard
                   key={r.id}
                   restaurant={r}
@@ -1564,10 +1735,13 @@ function DistanceSlider({
 
 function RecommendCard({ restaurant, t, navigation }: any) {
   const { distanceUnit } = useSettings();
-  const distValue =
-    distanceUnit === "mi"
-      ? `${((restaurant.dist_km || 2.4) * 0.621371).toFixed(1)} mi`
-      : `${restaurant.dist_km || 2.4} km`;
+  const hasDistance = typeof restaurant.dist_km === "number";
+  const distValue = hasDistance
+    ? distanceUnit === "mi"
+      ? `${(restaurant.dist_km * 0.621371).toFixed(1)} mi`
+      : `${restaurant.dist_km.toFixed(1)} km`
+    : null;
+  const price = getPriceSymbol(restaurant.min_price, restaurant.max_price);
 
   return (
     <TouchableOpacity
@@ -1595,7 +1769,8 @@ function RecommendCard({ restaurant, t, navigation }: any) {
         </View>
         <Text style={styles.recommendName}>{restaurant.name}</Text>
         <Text style={styles.recommendMeta}>
-          {distValue} away · {restaurant.rating || 4.4} rating
+          {distValue ? `${distValue} away · ` : ""}
+          {restaurant.rating || 4.4} rating · {price}
         </Text>
       </View>
       <View style={styles.recommendFab}>
@@ -1607,10 +1782,12 @@ function RecommendCard({ restaurant, t, navigation }: any) {
 
 function HistoryCard({ restaurant, t, navigation }: any) {
   const { distanceUnit } = useSettings();
-  const distValue =
-    distanceUnit === "mi"
-      ? `${((restaurant.dist_km || 2.4) * 0.621371).toFixed(1)} mi`
-      : `${restaurant.dist_km || 2.4} km`;
+  const hasDistance = typeof restaurant.dist_km === "number";
+  const distValue = hasDistance
+    ? distanceUnit === "mi"
+      ? `${(restaurant.dist_km * 0.621371).toFixed(1)} mi`
+      : `${restaurant.dist_km.toFixed(1)} km`
+    : null;
 
   const price = getPriceSymbol(restaurant.min_price, restaurant.max_price);
 
@@ -1641,7 +1818,8 @@ function HistoryCard({ restaurant, t, navigation }: any) {
           <Text style={styles.histPrice}>{price}</Text>
         </View>
         <Text style={styles.histMeta} numberOfLines={1}>
-          {distValue} away · {restaurant.rating || "4.4"} rating
+          {distValue ? `${distValue} away · ` : ""}
+          {restaurant.rating || "4.4"} rating
         </Text>
         {restaurant.date && (
           <Text style={styles.histDate}>{restaurant.date}</Text>

@@ -32,6 +32,7 @@ import {
   UtensilsCrossed,
   CalendarDays,
   ChevronRight,
+  DollarSign,
 } from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { WebView } from "react-native-webview";
@@ -619,7 +620,10 @@ export default function RestaurantDetail() {
 
             {priceRange && (
               <View style={styles.pill}>
-                <Text style={styles.pillText}>{priceRange}</Text>
+                <DollarSign size={11} color="#5C6B4A" strokeWidth={2} />
+                <Text style={styles.pillText}>
+                  {t("restaurant_detail.avg_per_person")}: {priceRange}
+                </Text>
               </View>
             )}
           </View>

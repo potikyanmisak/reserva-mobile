@@ -1811,8 +1811,11 @@ async function startServer() {
         logo_url,
       } = req.body;
 
-      // Only admins may edit these core identity/pricing fields — owners keep
-      // using their existing settings flow for these.
+      // Only admins may edit these core identity fields — owners keep using
+      // their existing settings flow for these. min_price/max_price are
+      // excluded from this restriction: the owner's Average Price Range
+      // card on this dashboard saves through this same route, so owners
+      // must be allowed to set their own price range here.
       const isAdmin = req.user.role === "admin";
 
       try {
@@ -1853,8 +1856,8 @@ async function startServer() {
           isAdmin ? (close_time ?? null) : null,
           isAdmin ? (is_24_hours != null ? (is_24_hours ? 1 : 0) : null) : null,
           isAdmin ? (deposit_amount ?? null) : null,
-          isAdmin ? (min_price ?? null) : null,
-          isAdmin ? (max_price ?? null) : null,
+          min_price ?? null,
+          max_price ?? null,
           isAdmin ? (logo_url ?? null) : null,
           req.params.id,
         );

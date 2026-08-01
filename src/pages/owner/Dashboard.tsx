@@ -507,8 +507,8 @@ export default function OwnerDashboard() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          min_price: minPrice ?? 0,
-          max_price: maxPrice ?? 0,
+          min_price: Number.isFinite(minPrice) ? minPrice : 0,
+          max_price: Number.isFinite(maxPrice) ? maxPrice : 0,
         }),
       });
       if (res.ok) {
@@ -2396,6 +2396,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   formMiniInput: {
+    width: "100%",
     backgroundColor: "rgba(0,0,0,0.02)",
     borderRadius: 16,
     padding: 16,
