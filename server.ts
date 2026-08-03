@@ -842,6 +842,11 @@ async function startServer() {
       "/api/login",
       asyncHandler(async (req: any, res: any) => {
         const { email, password } = req.body;
+        if (!email || !password) {
+          return res
+            .status(400)
+            .json({ error: "Email and password are required." });
+        }
         const user: any = db
           .prepare("SELECT * FROM users WHERE email = ?")
           .get(email);

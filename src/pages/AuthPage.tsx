@@ -56,12 +56,12 @@ export default function AuthPage() {
     "details",
   );
 
-    const [forgotEmail, setForgotEmail] = useState("");
-    const [tempResetAuth, setTempResetAuth] = useState<any>(null);
-    const [resetPasswordData, setResetPasswordData] = useState({
-      password: "",
-      confirmPassword: "",
-    });
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [tempResetAuth, setTempResetAuth] = useState<any>(null);
+  const [resetPasswordData, setResetPasswordData] = useState({
+    password: "",
+    confirmPassword: "",
+  });
 
   const [step, setStep] = useState(1);
   const [verificationCode, setVerificationCode] = useState("");
@@ -74,12 +74,12 @@ export default function AuthPage() {
   const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
 
   // Whichever form is currently active — used for verification screen, etc.
- const activeEmail =
-   step === 4 || step === 5 || step === 6
-     ? forgotEmail
-     : isLogin
-       ? loginData.email
-       : signupData.email;
+  const activeEmail =
+    step === 4 || step === 5 || step === 6
+      ? forgotEmail
+      : isLogin
+        ? loginData.email
+        : signupData.email;
 
   const hasMinLength = signupData.password.length >= 8;
   const hasNumber = /\d/.test(signupData.password);
@@ -116,6 +116,14 @@ export default function AuthPage() {
       : { ...signupData, role, verified: true };
 
     try {
+      if (isLogin) {
+        if (!loginData.email.trim() || !loginData.password.trim()) {
+          setError("Email and password are required.");
+          setLoading(false);
+          return;
+        }
+      }
+
       if (!isLogin) {
         if (!isPasswordValid) {
           setError(

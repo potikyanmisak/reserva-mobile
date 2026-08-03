@@ -2385,8 +2385,12 @@ const styles = StyleSheet.create({
     shadowRadius: 15,
     elevation: 4,
   },
-  formDataRow: { flexDirection: "row", gap: 12 },
-  formInputWrapper: { flex: 1, gap: 8 },
+  formDataRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  formInputWrapper: { flexBasis: "48%", flexGrow: 0, minWidth: 0, gap: 8 },
   tinyLabel: {
     fontSize: 9,
     fontWeight: "900",
