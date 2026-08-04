@@ -12,6 +12,9 @@ import {
   Modal,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  KeyboardAvoidingView,
+  Platform,
+  findNodeHandle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRoute, useNavigation } from "@react-navigation/native";
@@ -104,6 +107,8 @@ export default function RestaurantDetail() {
 
   const [restaurant, setRestaurant] = useState<any>(null);
   const [isSaved, setIsSaved] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const reviewInputRef = useRef<TextInput>(null);
   const [isReviewing, setIsReviewing] = useState(false);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
@@ -524,432 +529,477 @@ export default function RestaurantDetail() {
         </View>
       </Modal>
 
-      <ScrollView bounces={false} showsVerticalScrollIndicator={false}>
-        {/* ── Hero — fixed single image, no horizontal scroll ── */}
-        <View style={styles.heroContainer}>
-          <Image source={{ uri: heroImage }} style={styles.heroImage} />
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top : 0}
+      >
+        <ScrollView
+          ref={scrollViewRef}
+          bounces={false}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* ── Hero — fixed single image, no horizontal scroll ── */}
+          <View style={styles.heroContainer}>
+            <Image source={{ uri: heroImage }} style={styles.heroImage} />
 
-          {/* Gradient fade using exact page background color */}
-          <LinearGradient
-            colors={["transparent", "rgba(247,247,245,0.88)", "#F7F7F5"]}
-            style={styles.heroGradient}
-            pointerEvents="none"
-          />
+            {/* Gradient fade using exact page background color */}
+            <LinearGradient
+              colors={["transparent", "rgba(247,247,245,0.88)", "#F7F7F5"]}
+              style={styles.heroGradient}
+              pointerEvents="none"
+            />
 
-          {/* Top bar */}
-          <View style={[styles.topBar, { top: insets.top + 12 }]}>
-            <TouchableOpacity
-              onPress={() => navigation.goBack()}
-              style={styles.iconBtn}
-            >
-              <ChevronLeft size={18} color="white" strokeWidth={2.5} />
-            </TouchableOpacity>
-            <View style={styles.topBarRight}>
-              <TouchableOpacity style={styles.iconBtn}>
-                <Share2 size={15} color="white" strokeWidth={2} />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleSave} style={styles.iconBtn}>
-                <Heart
-                  size={15}
-                  color={isSaved ? "#ef4444" : "white"}
-                  fill={isSaved ? "#ef4444" : "none"}
-                  strokeWidth={2}
-                />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Name + subtitle */}
-          <View style={styles.heroInfo}>
-            <Text style={styles.heroName}>{restaurant.name}</Text>
-            {!!subtitle && <Text style={styles.heroSubtitle}>{subtitle}</Text>}
-          </View>
-
-          {/* Rating pill */}
-          <View style={styles.ratingPill}>
-            <Star size={12} color="#eab308" fill="#eab308" />
-            <Text style={styles.ratingText}>
-              {restaurant.rating > 0
-                ? restaurant.rating.toFixed(1)
-                : t("restaurant_detail.new_badge")}
-            </Text>
-            {restaurant.review_count > 0 && (
-              <Text style={styles.ratingCount}>
-                ({restaurant.review_count})
-              </Text>
-            )}
-          </View>
-        </View>
-
-        {/* ── Content ── */}
-        <View style={styles.content}>
-          {/* Info pills row */}
-          <View style={styles.pillsRow}>
-            <View style={styles.pill}>
-              <Clock size={11} color="#5C6B4A" strokeWidth={2} />
-              <Text
-                style={[
-                  styles.pillText,
-                  open ? styles.openText : styles.closedText,
-                ]}
-              >
-                {openStatus.is24Hours
-                  ? t("restaurant_detail.open_24_hours")
-                  : `${
-                      open
-                        ? t("restaurant_detail.open")
-                        : t("restaurant_detail.closed")
-                    } · ${
-                      open
-                        ? t("restaurant_detail.closes_label")
-                        : t("restaurant_detail.opens_label")
-                    } ${openStatus.time || "—"}`}
-              </Text>
-            </View>
-
-            {restaurant.dist_km > 0 && (
-              <View style={styles.pill}>
-                <MapPin size={11} color="#5C6B4A" strokeWidth={2} />
-                <Text style={styles.pillText}>
-                  {restaurant.dist_km < 1
-                    ? `${Math.round(restaurant.dist_km * 1000)} ${t("restaurant_detail.away_meters")}`
-                    : `${restaurant.dist_km.toFixed(1)} ${t("restaurant_detail.away_km")}`}
-                </Text>
-              </View>
-            )}
-
-            {priceRange && (
-              <View style={styles.pill}>
-                <DollarSign size={11} color="#5C6B4A" strokeWidth={2} />
-                <Text style={styles.pillText}>
-                  {t("restaurant_detail.avg_per_person")}: {priceRange}
-                </Text>
-              </View>
-            )}
-          </View>
-
-          {/* Reservations + Menu row */}
-          <View style={styles.actionRow}>
-            <TouchableOpacity
-              style={styles.reservationCard}
-              onPress={() =>
-                restaurant.phone_number &&
-                Linking.openURL(`tel:${restaurant.phone_number}`)
-              }
-            >
-              <Phone size={16} color="#5A5A40" strokeWidth={2} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardLabel}>
-                  {t("restaurant_detail.reservations_label")}
-                </Text>
-                <Text style={styles.cardValue} numberOfLines={1}>
-                  {restaurant.phone_number
-                    ? restaurant.secondary_phone
-                      ? `${restaurant.phone_number} • ${restaurant.secondary_phone}`
-                      : restaurant.phone_number
-                    : t("restaurant_detail.not_available")}
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            {restaurant.menuImages?.length > 0 && (
+            {/* Top bar */}
+            <View style={[styles.topBar, { top: insets.top + 12 }]}>
               <TouchableOpacity
-                style={styles.menuCard}
-                onPress={() => setShowMenu(true)}
+                onPress={() => navigation.goBack()}
+                style={styles.iconBtn}
               >
-                <UtensilsCrossed size={16} color="#5A5A40" strokeWidth={2} />
-                <Text style={styles.menuCardText}>
-                  {t("restaurant_detail.menu_label")}
-                </Text>
+                <ChevronLeft size={18} color="white" strokeWidth={2.5} />
               </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Location section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionHeading}>
-              {t("restaurant_detail.location_heading")}
-            </Text>
-            <View style={styles.locationCard}>
-              <View style={styles.locationMap}>
-                <WebView
-                  style={{ width: "100%", height: "100%" }}
-                  scrollEnabled={false}
-                  source={{
-                    html: `<iframe width="100%" height="100%" style="border:0;pointer-events:none;" src="https://maps.google.com/maps?q=${encodeURIComponent(restaurant.location || restaurant.name)}&t=&z=15&ie=UTF8&iwloc=&output=embed"></iframe>`,
-                  }}
-                />
-                <View style={styles.mapDot} />
-              </View>
-              <View style={styles.locationInfo}>
-                <Text style={styles.locationAddress}>
-                  {restaurant.address ||
-                    restaurant.location ||
-                    t("restaurant_detail.address_not_available")}
-                </Text>
-                {restaurant.district && (
-                  <Text style={styles.locationDistrict}>
-                    {restaurant.district}
-                  </Text>
-                )}
-                <TouchableOpacity
-                  onPress={() => {
-                    const q = encodeURIComponent(
-                      restaurant.address ||
-                        restaurant.location ||
-                        restaurant.name,
-                    );
-                    Linking.openURL(`https://maps.google.com/?q=${q}`);
-                  }}
-                >
-                  <Text style={styles.directionsLink}>
-                    {t("restaurant_detail.get_directions")}
-                  </Text>
+              <View style={styles.topBarRight}>
+                <TouchableOpacity style={styles.iconBtn}>
+                  <Share2 size={15} color="white" strokeWidth={2} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleSave} style={styles.iconBtn}>
+                  <Heart
+                    size={15}
+                    color={isSaved ? "#ef4444" : "white"}
+                    fill={isSaved ? "#ef4444" : "none"}
+                    strokeWidth={2}
+                  />
                 </TouchableOpacity>
               </View>
             </View>
+
+            {/* Name + subtitle */}
+            <View style={styles.heroInfo}>
+              <Text style={styles.heroName}>{restaurant.name}</Text>
+              {!!subtitle && (
+                <Text style={styles.heroSubtitle}>{subtitle}</Text>
+              )}
+            </View>
+
+            {/* Rating pill */}
+            <View style={styles.ratingPill}>
+              <Star size={12} color="#eab308" fill="#eab308" />
+              <Text style={styles.ratingText}>
+                {restaurant.rating > 0
+                  ? restaurant.rating.toFixed(1)
+                  : t("restaurant_detail.new_badge")}
+              </Text>
+              {restaurant.review_count > 0 && (
+                <Text style={styles.ratingCount}>
+                  ({restaurant.review_count})
+                </Text>
+              )}
+            </View>
           </View>
 
-          {/* About */}
-          <View style={styles.section}>
-            <Text style={styles.sectionHeading}>
-              {t("restaurant_detail.about_heading")}
-            </Text>
-            <Text style={styles.description}>
-              {restaurant.description ||
-                t("restaurant_detail.default_description")}
-            </Text>
-          </View>
+          {/* ── Content ── */}
+          <View style={styles.content}>
+            {/* Info pills row */}
+            <View style={styles.pillsRow}>
+              <View style={styles.pill}>
+                <Clock size={11} color="#5C6B4A" strokeWidth={2} />
+                <Text
+                  style={[
+                    styles.pillText,
+                    open ? styles.openText : styles.closedText,
+                  ]}
+                >
+                  {openStatus.is24Hours
+                    ? t("restaurant_detail.open_24_hours")
+                    : `${
+                        open
+                          ? t("restaurant_detail.open")
+                          : t("restaurant_detail.closed")
+                      } · ${
+                        open
+                          ? t("restaurant_detail.closes_label")
+                          : t("restaurant_detail.opens_label")
+                      } ${openStatus.time || "—"}`}
+                </Text>
+              </View>
 
-          {/* Gallery */}
-          {restaurant.images?.length > 0 && (
+              {restaurant.dist_km > 0 && (
+                <View style={styles.pill}>
+                  <MapPin size={11} color="#5C6B4A" strokeWidth={2} />
+                  <Text style={styles.pillText}>
+                    {restaurant.dist_km < 1
+                      ? `${Math.round(restaurant.dist_km * 1000)} ${t("restaurant_detail.away_meters")}`
+                      : `${restaurant.dist_km.toFixed(1)} ${t("restaurant_detail.away_km")}`}
+                  </Text>
+                </View>
+              )}
+
+              {priceRange && (
+                <View style={styles.pill}>
+                  <DollarSign size={11} color="#5C6B4A" strokeWidth={2} />
+                  <Text style={styles.pillText}>
+                    {t("restaurant_detail.avg_per_person")}: {priceRange}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* Reservations + Menu row */}
+            <View style={styles.actionRow}>
+              <TouchableOpacity
+                style={styles.reservationCard}
+                onPress={() =>
+                  restaurant.phone_number &&
+                  Linking.openURL(`tel:${restaurant.phone_number}`)
+                }
+              >
+                <Phone size={16} color="#5A5A40" strokeWidth={2} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cardLabel}>
+                    {t("restaurant_detail.reservations_label")}
+                  </Text>
+                  <Text style={styles.cardValue} numberOfLines={1}>
+                    {restaurant.phone_number
+                      ? restaurant.secondary_phone
+                        ? `${restaurant.phone_number} • ${restaurant.secondary_phone}`
+                        : restaurant.phone_number
+                      : t("restaurant_detail.not_available")}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              {restaurant.menuImages?.length > 0 && (
+                <TouchableOpacity
+                  style={styles.menuCard}
+                  onPress={() => setShowMenu(true)}
+                >
+                  <UtensilsCrossed size={16} color="#5A5A40" strokeWidth={2} />
+                  <Text style={styles.menuCardText}>
+                    {t("restaurant_detail.menu_label")}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Location section */}
             <View style={styles.section}>
               <Text style={styles.sectionHeading}>
-                {t("restaurant_detail.gallery_heading")}
+                {t("restaurant_detail.location_heading")}
               </Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                snapToInterval={width * 0.62 + 16}
-                decelerationRate="fast"
-                contentContainerStyle={{ gap: 12, paddingRight: 4 }}
-                style={{ marginTop: 12 }}
-              >
-                {restaurant.images.map((img: any, i: number) => (
-                  <View key={i} style={styles.galleryItem}>
-                    <Image
-                      source={{ uri: img.url }}
-                      style={styles.galleryImage}
-                    />
-                  </View>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-
-          {/* Reviews */}
-          <View style={[styles.section, { paddingBottom: 120 }]}>
-            <View style={styles.reviewsHeader}>
-              <Text style={styles.reviewsHeading}>
-                {t("restaurant_detail.reviews")}
-              </Text>
-              <TouchableOpacity style={styles.seeAllBtn}>
-                <Text style={styles.seeAllText}>
-                  {t("restaurant_detail.see_all")}
-                </Text>
-                <ChevronRight size={14} color="#5C6B4A" strokeWidth={2.5} />
-              </TouchableOpacity>
-            </View>
-
-            {user?.id !== restaurant.owner_id && (
-              <TouchableOpacity
-                onPress={() => setIsReviewing(!isReviewing)}
-                style={styles.writeReviewBtn}
-              >
-                <Text style={styles.writeReviewText}>
-                  {isReviewing ? t("common.cancel") : t("profile.write_review")}
-                </Text>
-              </TouchableOpacity>
-            )}
-
-            {isReviewing && (
-              <View style={styles.reviewForm}>
-                <View style={styles.starRow}>
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <TouchableOpacity
-                      key={star}
-                      onPress={() => setReviewRating(star)}
-                    >
-                      <Star
-                        size={22}
-                        color={
-                          star <= reviewRating ? "#eab308" : "rgba(0,0,0,0.12)"
-                        }
-                        fill={star <= reviewRating ? "#eab308" : "none"}
-                      />
-                    </TouchableOpacity>
-                  ))}
+              <View style={styles.locationCard}>
+                <View style={styles.locationMap}>
+                  <WebView
+                    style={{ width: "100%", height: "100%" }}
+                    scrollEnabled={false}
+                    source={{
+                      html: `<iframe width="100%" height="100%" style="border:0;pointer-events:none;" src="https://maps.google.com/maps?q=${encodeURIComponent(restaurant.location || restaurant.name)}&t=&z=15&ie=UTF8&iwloc=&output=embed"></iframe>`,
+                    }}
+                  />
+                  <View style={styles.mapDot} />
                 </View>
-                <TextInput
-                  value={reviewComment}
-                  onChangeText={(text) => {
-                    setReviewComment(text);
-                    if (aiAnalysis) setAiAnalysis(null);
-                  }}
-                  placeholder={t("restaurant_detail.share_thoughts")}
-                  multiline
-                  style={styles.reviewInput}
-                  placeholderTextColor="rgba(0,0,0,0.3)"
-                />
-                {aiAnalysis && (
-                  <View style={styles.aiBox}>
-                    <View style={styles.aiHeader}>
-                      <View style={styles.aiIcon}>
-                        <Sparkles size={13} color="#5C6B4A" />
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.aiTitle}>
-                          {t("restaurant_detail.ai_analysis_title")}
-                        </Text>
-                        <Text style={styles.aiText}>
-                          {t("restaurant_detail.ai_detected_prefix")}{" "}
-                          <Text style={{ fontWeight: "700" }}>
-                            {getSentimentLabel(aiAnalysis.sentiment, t)}
-                          </Text>{" "}
-                          {t("restaurant_detail.ai_feedback_suffix")}{" "}
-                          {aiAnalysis.categories.length > 0
-                            ? aiAnalysis.categories
-                                .map((c) => getCategoryLabel(c, t))
-                                .join(", ")
-                            : t("restaurant_detail.general_experience")}
-                        </Text>
-                      </View>
-                    </View>
-                    <View style={styles.aiActions}>
-                      <TouchableOpacity
-                        onPress={() => {
-                          setUserConfirmedAnalysis(true);
-                          handleSubmitReview();
-                        }}
-                        style={styles.confirmBtn}
-                      >
-                        <Check size={12} color="white" />
-                        <Text style={styles.confirmBtnText}>
-                          {t("common.confirm")}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() => {
-                          setUserConfirmedAnalysis(false);
-                          handleSubmitReview();
-                        }}
-                        style={styles.ignoreBtn}
-                      >
-                        <X size={12} color="#2D2D2D" />
-                        <Text style={styles.ignoreBtnText}>
-                          {t("common.ignore")}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-                {!aiAnalysis && (
+                <View style={styles.locationInfo}>
+                  <Text style={styles.locationAddress}>
+                    {restaurant.address ||
+                      restaurant.location ||
+                      t("restaurant_detail.address_not_available")}
+                  </Text>
+                  {restaurant.district && (
+                    <Text style={styles.locationDistrict}>
+                      {restaurant.district}
+                    </Text>
+                  )}
                   <TouchableOpacity
-                    onPress={handleSubmitReview}
-                    disabled={submittingReview || analyzingReview}
-                    style={[
-                      styles.submitBtn,
-                      (submittingReview || analyzingReview) && { opacity: 0.5 },
-                    ]}
+                    onPress={() => {
+                      const q = encodeURIComponent(
+                        restaurant.address ||
+                          restaurant.location ||
+                          restaurant.name,
+                      );
+                      Linking.openURL(`https://maps.google.com/?q=${q}`);
+                    }}
                   >
-                    {analyzingReview ? (
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          gap: 8,
-                          alignItems: "center",
-                        }}
-                      >
-                        <Sparkles size={14} color="white" />
-                        <Text style={styles.submitBtnText}>
-                          {t("restaurant_detail.analyzing")}
-                        </Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.submitBtnText}>
-                        {submittingReview
-                          ? t("restaurant_detail.submitting")
-                          : t("restaurant_detail.submit")}
-                      </Text>
-                    )}
+                    <Text style={styles.directionsLink}>
+                      {t("restaurant_detail.get_directions")}
+                    </Text>
                   </TouchableOpacity>
-                )}
+                </View>
+              </View>
+            </View>
+
+            {/* About */}
+            <View style={styles.section}>
+              <Text style={styles.sectionHeading}>
+                {t("restaurant_detail.about_heading")}
+              </Text>
+              <Text style={styles.description}>
+                {restaurant.description ||
+                  t("restaurant_detail.default_description")}
+              </Text>
+            </View>
+
+            {/* Gallery */}
+            {restaurant.images?.length > 0 && (
+              <View style={styles.section}>
+                <Text style={styles.sectionHeading}>
+                  {t("restaurant_detail.gallery_heading")}
+                </Text>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  snapToInterval={width * 0.62 + 16}
+                  decelerationRate="fast"
+                  contentContainerStyle={{ gap: 12, paddingRight: 4 }}
+                  style={{ marginTop: 12 }}
+                >
+                  {restaurant.images.map((img: any, i: number) => (
+                    <View key={i} style={styles.galleryItem}>
+                      <Image
+                        source={{ uri: img.url }}
+                        style={styles.galleryImage}
+                      />
+                    </View>
+                  ))}
+                </ScrollView>
               </View>
             )}
 
-            <View style={{ gap: 12, marginTop: 16 }}>
-              {(restaurant.reviews || []).map((review: any) => (
-                <View key={review.id} style={styles.reviewCard}>
-                  <View style={styles.reviewTop}>
-                    <View style={styles.reviewUser}>
-                      <View style={styles.avatar}>
-                        {review.photo_url ? (
-                          <Image
-                            source={{ uri: review.photo_url }}
-                            style={styles.avatarImage}
-                          />
-                        ) : (
-                          <Text style={styles.avatarText}>
-                            {review.name?.[0]?.toUpperCase() || "?"}
+            {/* Reviews */}
+            <View style={[styles.section, { paddingBottom: 120 }]}>
+              <View style={styles.reviewsHeader}>
+                <Text style={styles.reviewsHeading}>
+                  {t("restaurant_detail.reviews")}
+                </Text>
+                <TouchableOpacity style={styles.seeAllBtn}>
+                  <Text style={styles.seeAllText}>
+                    {t("restaurant_detail.see_all")}
+                  </Text>
+                  <ChevronRight size={14} color="#5C6B4A" strokeWidth={2.5} />
+                </TouchableOpacity>
+              </View>
+
+              {user?.id !== restaurant.owner_id && (
+                <TouchableOpacity
+                  onPress={() => setIsReviewing(!isReviewing)}
+                  style={styles.writeReviewBtn}
+                >
+                  <Text style={styles.writeReviewText}>
+                    {isReviewing
+                      ? t("common.cancel")
+                      : t("profile.write_review")}
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              {isReviewing && (
+                <View style={styles.reviewForm}>
+                  <View style={styles.starRow}>
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <TouchableOpacity
+                        key={star}
+                        onPress={() => setReviewRating(star)}
+                      >
+                        <Star
+                          size={22}
+                          color={
+                            star <= reviewRating
+                              ? "#eab308"
+                              : "rgba(0,0,0,0.12)"
+                          }
+                          fill={star <= reviewRating ? "#eab308" : "none"}
+                        />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <TextInput
+                    ref={reviewInputRef}
+                    value={reviewComment}
+                    onChangeText={(text) => {
+                      setReviewComment(text);
+                      if (aiAnalysis) setAiAnalysis(null);
+                    }}
+                    onFocus={() => {
+                      // Give the keyboard time to animate in, then make sure
+                      // the input isn't hidden behind it. measureLayout gives
+                      // a position relative to the ScrollView's own content,
+                      // which is what scrollTo needs (unlike measure(), which
+                      // returns absolute screen coordinates).
+                      setTimeout(() => {
+                        const scrollNode = findNodeHandle(
+                          scrollViewRef.current,
+                        );
+                        if (!scrollNode) return;
+                        reviewInputRef.current?.measureLayout(
+                          scrollNode,
+                          (x, y) => {
+                            scrollViewRef.current?.scrollTo({
+                              y: y - 160,
+                              animated: true,
+                            });
+                          },
+                          () => {},
+                        );
+                      }, 100);
+                    }}
+                    placeholder={t("restaurant_detail.share_thoughts")}
+                    multiline
+                    style={styles.reviewInput}
+                    placeholderTextColor="rgba(0,0,0,0.3)"
+                  />
+                  {aiAnalysis && (
+                    <View style={styles.aiBox}>
+                      <View style={styles.aiHeader}>
+                        <View style={styles.aiIcon}>
+                          <Sparkles size={13} color="#5C6B4A" />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.aiTitle}>
+                            {t("restaurant_detail.ai_analysis_title")}
                           </Text>
-                        )}
-                      </View>
-                      <View>
-                        <Text style={styles.reviewName}>{review.name}</Text>
-                        <View style={styles.reviewStars}>
-                          {[1, 2, 3, 4, 5].map((s) => (
-                            <Star
-                              key={s}
-                              size={10}
-                              color={
-                                s <= (review.rating || 5)
-                                  ? "#eab308"
-                                  : "rgba(0,0,0,0.1)"
-                              }
-                              fill={
-                                s <= (review.rating || 5) ? "#eab308" : "none"
-                              }
-                            />
-                          ))}
+                          <Text style={styles.aiText}>
+                            {t("restaurant_detail.ai_detected_prefix")}{" "}
+                            <Text style={{ fontWeight: "700" }}>
+                              {getSentimentLabel(aiAnalysis.sentiment, t)}
+                            </Text>{" "}
+                            {t("restaurant_detail.ai_feedback_suffix")}{" "}
+                            {aiAnalysis.categories.length > 0
+                              ? aiAnalysis.categories
+                                  .map((c) => getCategoryLabel(c, t))
+                                  .join(", ")
+                              : t("restaurant_detail.general_experience")}
+                          </Text>
                         </View>
                       </View>
+                      <View style={styles.aiActions}>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setUserConfirmedAnalysis(true);
+                            handleSubmitReview();
+                          }}
+                          style={styles.confirmBtn}
+                        >
+                          <Check size={12} color="white" />
+                          <Text style={styles.confirmBtnText}>
+                            {t("common.confirm")}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => {
+                            setUserConfirmedAnalysis(false);
+                            handleSubmitReview();
+                          }}
+                          style={styles.ignoreBtn}
+                        >
+                          <X size={12} color="#2D2D2D" />
+                          <Text style={styles.ignoreBtnText}>
+                            {t("common.ignore")}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
                     </View>
+                  )}
+                  {!aiAnalysis && (
                     <TouchableOpacity
-                      onPress={() => handleLikeReview(review.id)}
-                      style={styles.likeBtn}
+                      onPress={handleSubmitReview}
+                      disabled={submittingReview || analyzingReview}
+                      style={[
+                        styles.submitBtn,
+                        (submittingReview || analyzingReview) && {
+                          opacity: 0.5,
+                        },
+                      ]}
                     >
-                      <Heart
-                        size={13}
-                        color={review.is_liked ? "#ef4444" : "rgba(0,0,0,0.25)"}
-                        fill={review.is_liked ? "#ef4444" : "none"}
-                      />
-                      <Text
-                        style={[
-                          styles.likeCount,
-                          review.is_liked && { color: "#ef4444" },
-                        ]}
-                      >
-                        {review.likes || 0}
-                      </Text>
+                      {analyzingReview ? (
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            gap: 8,
+                            alignItems: "center",
+                          }}
+                        >
+                          <Sparkles size={14} color="white" />
+                          <Text style={styles.submitBtnText}>
+                            {t("restaurant_detail.analyzing")}
+                          </Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.submitBtnText}>
+                          {submittingReview
+                            ? t("restaurant_detail.submitting")
+                            : t("restaurant_detail.submit")}
+                        </Text>
+                      )}
                     </TouchableOpacity>
-                  </View>
-                  <Text style={styles.reviewComment}>{review.comment}</Text>
+                  )}
                 </View>
-              ))}
+              )}
+
+              <View style={{ gap: 12, marginTop: 16 }}>
+                {(restaurant.reviews || []).map((review: any) => (
+                  <View key={review.id} style={styles.reviewCard}>
+                    <View style={styles.reviewTop}>
+                      <View style={styles.reviewUser}>
+                        <View style={styles.avatar}>
+                          {review.photo_url ? (
+                            <Image
+                              source={{ uri: review.photo_url }}
+                              style={styles.avatarImage}
+                            />
+                          ) : (
+                            <Text style={styles.avatarText}>
+                              {review.name?.[0]?.toUpperCase() || "?"}
+                            </Text>
+                          )}
+                        </View>
+                        <View>
+                          <Text style={styles.reviewName}>{review.name}</Text>
+                          <View style={styles.reviewStars}>
+                            {[1, 2, 3, 4, 5].map((s) => (
+                              <Star
+                                key={s}
+                                size={10}
+                                color={
+                                  s <= (review.rating || 5)
+                                    ? "#eab308"
+                                    : "rgba(0,0,0,0.1)"
+                                }
+                                fill={
+                                  s <= (review.rating || 5) ? "#eab308" : "none"
+                                }
+                              />
+                            ))}
+                          </View>
+                        </View>
+                      </View>
+                      <TouchableOpacity
+                        onPress={() => handleLikeReview(review.id)}
+                        style={styles.likeBtn}
+                      >
+                        <Heart
+                          size={13}
+                          color={
+                            review.is_liked ? "#ef4444" : "rgba(0,0,0,0.25)"
+                          }
+                          fill={review.is_liked ? "#ef4444" : "none"}
+                        />
+                        <Text
+                          style={[
+                            styles.likeCount,
+                            review.is_liked && { color: "#ef4444" },
+                          ]}
+                        >
+                          {review.likes || 0}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.reviewComment}>{review.comment}</Text>
+                  </View>
+                ))}
+              </View>
             </View>
           </View>
-        </View>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* ── Sticky Reserve Button ── */}
       {user?.id !== restaurant.owner_id && (
