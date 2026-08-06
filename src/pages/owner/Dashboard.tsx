@@ -1096,7 +1096,10 @@ export default function OwnerDashboard() {
           <View style={styles.dashboardGrid}>
             <TouchableOpacity
               onPress={() =>
-                navigation.navigate("RestaurantDetail", { id: restaurant.id })
+                navigation.navigate("RestaurantDetail", {
+                  id: restaurant.id,
+                  isPreview: true,
+                })
               }
               style={styles.quickActionButton}
             >

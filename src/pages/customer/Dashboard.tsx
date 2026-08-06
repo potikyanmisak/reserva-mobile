@@ -885,9 +885,10 @@ export default function CustomerDashboard() {
 
   const getTimeOfDay = () => {
     const h = new Date().getHours();
-    if (h < 12) return t("dashboard.good_morning");
-    if (h < 18) return t("dashboard.good_afternoon");
-    return t("dashboard.good_evening");
+    if (h >= 6 && h < 12) return t("dashboard.good_morning");
+    if (h >= 12 && h < 18) return t("dashboard.good_afternoon");
+    if (h >= 18 && h < 23) return t("dashboard.good_evening");
+    return t("dashboard.good_night"); // 11pm – 5:59am
   };
 
   const unreadCount = notifications.filter((n) => !n.read).length;

@@ -101,7 +101,10 @@ export default function RestaurantDetail() {
   const insets = useSafeAreaInsets();
   const route = useRoute();
   const navigation = useNavigation<any>();
-  const { id } = route.params as { id: string };
+  const { id, isPreview } = route.params as {
+    id: string;
+    isPreview?: boolean;
+  };
   const { user } = useAuth();
   const { t } = useLanguage();
 
@@ -559,19 +562,21 @@ export default function RestaurantDetail() {
               >
                 <ChevronLeft size={18} color="white" strokeWidth={2.5} />
               </TouchableOpacity>
-              <View style={styles.topBarRight}>
-                <TouchableOpacity style={styles.iconBtn}>
-                  <Share2 size={15} color="white" strokeWidth={2} />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleSave} style={styles.iconBtn}>
-                  <Heart
-                    size={15}
-                    color={isSaved ? "#ef4444" : "white"}
-                    fill={isSaved ? "#ef4444" : "none"}
-                    strokeWidth={2}
-                  />
-                </TouchableOpacity>
-              </View>
+              {!isPreview && (
+                <View style={styles.topBarRight}>
+                  <TouchableOpacity style={styles.iconBtn}>
+                    <Share2 size={15} color="white" strokeWidth={2} />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={handleSave} style={styles.iconBtn}>
+                    <Heart
+                      size={15}
+                      color={isSaved ? "#ef4444" : "white"}
+                      fill={isSaved ? "#ef4444" : "none"}
+                      strokeWidth={2}
+                    />
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
 
             {/* Name + subtitle */}
