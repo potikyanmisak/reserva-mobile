@@ -38,6 +38,7 @@
     "jsonwebtoken": "^9.0.0",
     "lucide-react-native": "^0.475.0",
     "moti": "^0.30.0",
+    "node-cron": "^4.6.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-native": "0.81.5",

@@ -8,6 +8,7 @@ import fs from "fs";
 import { Resend } from "resend";
 import { buildVerificationEmail } from "./emailTemplates";
 import { GoogleGenAI, Type } from "@google/genai";
+import { startBackupSchedule, runBackup } from "./backup";
 
 const ISSUE_CATEGORIES = [
   "Food Quality",
@@ -146,6 +147,7 @@ const sendEmail = async (to: string, subject: string, html: string) => {
 };
 
 let db: any;
+let dbPathForBackup: string = "";
 
 async function sendPushNotification(
   pushToken: string | null,
@@ -187,6 +189,21 @@ async function startServer() {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
+  // Manual on-demand backup trigger, e.g. right before running a risky
+  // migration. Protected by a shared secret so it isn't publicly callable.
+  app.post("/api/admin/backup", async (req: any, res: any) => {
+    const secret = req.headers["x-backup-secret"];
+    if (
+      !process.env.BACKUP_TRIGGER_SECRET ||
+      secret !== process.env.BACKUP_TRIGGER_SECRET
+    ) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    if (!db) return res.status(503).json({ error: "Database not ready" });
+    const result = await runBackup(db, dbPathForBackup, true);
+    res.status(result.ok ? 200 : 500).json(result);
+  });
+
   try {
     console.log("[Reserva] Initializing Database...");
     const dbPath =
@@ -199,6 +216,9 @@ async function startServer() {
     db.pragma("journal_mode = WAL");
     db.pragma("busy_timeout = 5000");
     console.log("[Reserva] Database connection established.");
+
+    dbPathForBackup = dbPath;
+    startBackupSchedule(db, dbPath);
 
     console.log("[Reserva] Creating tables...");
 
