@@ -7,7 +7,7 @@ import {
   TextInput,
   Image,
   StyleSheet,
-  Dimensions,
+  useWindowDimensions,
   Switch,
   Pressable,
   Platform,
@@ -51,8 +51,6 @@ import {
   AMENITIES,
   MOODS,
 } from "../../lib/filterOptions";
-
-const { width, height } = Dimensions.get("window");
 
 // FIX: enable LayoutAnimation on Android (no-op on iOS, which supports it natively)
 if (
@@ -1734,6 +1732,8 @@ function DistanceSlider({
 }
 
 function RecommendCard({ restaurant, t, navigation }: any) {
+  const { width } = useWindowDimensions();
+  const cardWidth = Math.min(width * 0.62, 320);
   const { distanceUnit } = useSettings();
   const hasDistance = typeof restaurant.dist_km === "number";
   const distValue = hasDistance
@@ -1748,7 +1748,7 @@ function RecommendCard({ restaurant, t, navigation }: any) {
       onPress={() =>
         navigation.navigate("RestaurantDetail", { id: restaurant.id })
       }
-      style={styles.recommendCard}
+      style={[styles.recommendCard, { width: cardWidth }]}
       activeOpacity={0.9}
     >
       <Image
@@ -1843,6 +1843,7 @@ function FilterModal({
   ratings,
   t,
 }: any) {
+  const { height } = useWindowDimensions();
   const [local, setLocal] = useState<ActiveFilters>({ ...activeFilters });
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     cuisine: true,
@@ -1964,7 +1965,10 @@ function FilterModal({
         />
       </Pressable>
       <Animated.View
-        style={[styles.modalSheet, { transform: [{ translateY }] }]}
+        style={[
+          styles.modalSheet,
+          { maxHeight: height * 0.85, transform: [{ translateY }] },
+        ]}
       >
         <View {...panResponder.panHandlers} style={styles.modalDragArea}>
           <View style={styles.modalHandle} />
@@ -2658,7 +2662,6 @@ const styles = StyleSheet.create({
   },
 
   recommendCard: {
-    width: width * 0.62,
     height: 220,
     borderRadius: 28,
     overflow: "hidden",
@@ -2819,7 +2822,6 @@ const styles = StyleSheet.create({
     backgroundColor: C.white,
     borderTopLeftRadius: 36,
     borderTopRightRadius: 36,
-    maxHeight: height * 0.85,
     paddingBottom: Platform.OS === "ios" ? 88 : 72,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: -6 },

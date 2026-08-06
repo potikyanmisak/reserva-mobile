@@ -41,12 +41,21 @@ import {
   AlertTriangle,
   Info,
   Mail,
+  LayoutDashboard,
+  History,
+  RotateCcw,
 } from "lucide-react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getApiUrl } from "../../lib/api";
 
 type Tab =
-  "users" | "requests" | "payments" | "featured" | "bugs" | "restaurants";
+  | "overview"
+  | "users"
+  | "requests"
+  | "payments"
+  | "featured"
+  | "bugs"
+  | "restaurants";
 
 const MAX_FEATURED = 10;
 
@@ -206,6 +215,43 @@ const tagStyles = StyleSheet.create({
   tagText: { fontSize: 9, fontWeight: "800", textTransform: "uppercase" },
 });
 
+// Turns an audit log row into a short, readable sentence.
+function formatAuditAction(entry: any): string {
+  const target =
+    entry.target_type === "restaurant"
+      ? "restaurant"
+      : entry.target_type === "user"
+        ? "user"
+        : entry.target_type === "reservation"
+          ? "reservation"
+          : entry.target_type === "bug_report"
+            ? "bug report"
+            : entry.target_type || "item";
+  const idSuffix = entry.target_id ? ` #${entry.target_id}` : "";
+  switch (entry.action) {
+    case "decline_restaurant":
+      return `Declined ${target}${idSuffix}`;
+    case "delete_restaurant":
+      return `Deleted ${target}${idSuffix}`;
+    case "delete_user":
+      return `Deleted ${target}${idSuffix}`;
+    case "edit_reservation":
+      return `Edited ${target}${idSuffix}`;
+    case "cancel_reservation":
+      return `Cancelled ${target}${idSuffix}`;
+    case "delete_bug_report":
+      return `Deleted ${target}${idSuffix}`;
+    case "bug_report_resolved":
+      return `Resolved ${target}${idSuffix}`;
+    case "bug_report_dismissed":
+      return `Dismissed ${target}${idSuffix}`;
+    case "bug_report_open":
+      return `Reopened ${target}${idSuffix}`;
+    default:
+      return `${entry.action || "Updated"} ${target}${idSuffix}`;
+  }
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AdminDashboard() {
@@ -218,10 +264,20 @@ export default function AdminDashboard() {
   );
   const [featuredRestaurants, setFeaturedRestaurants] = useState<any[]>([]);
   const [bugReports, setBugReports] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<Tab>("requests");
+  const [overviewStats, setOverviewStats] = useState<{
+    pendingApplications: number;
+    totalUsers: number;
+    totalRestaurants: number;
+    reservationsToday: number;
+    openBugReports: number;
+  } | null>(null);
+  const [auditLog, setAuditLog] = useState<any[]>([]);
+  const [loadingOverview, setLoadingOverview] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [processingId, setProcessingId] = useState<number | null>(null);
+  const [processingBugId, setProcessingBugId] = useState<number | null>(null);
   const [showAddFeaturedModal, setShowAddFeaturedModal] = useState(false);
   const [addFeaturedSearch, setAddFeaturedSearch] = useState("");
 
@@ -290,6 +346,21 @@ export default function AdminDashboard() {
     notes: "",
   });
   const [savingRestaurant, setSavingRestaurant] = useState(false);
+
+  // ── New: edit/cancel individual reservation ────────────────────────────────
+  const [editingReservation, setEditingReservation] = useState<any | null>(
+    null,
+  );
+  const [reservationEditForm, setReservationEditForm] = useState({
+    date: "",
+    time: "",
+    people_count: "",
+    notes: "",
+  });
+  const [savingReservation, setSavingReservation] = useState(false);
+  const [cancellingReservationId, setCancellingReservationId] = useState<
+    number | null
+  >(null);
 
   // ── New: user edit modal ───────────────────────────────────────────────────
   const [editingUser, setEditingUser] = useState<any | null>(null);
@@ -385,12 +456,124 @@ export default function AdminDashboard() {
     }
   };
 
+  // ── Bug report status workflow (resolve / dismiss / reopen / delete) ──────
+
+  const handleSetBugReportStatus = async (
+    report: any,
+    status: "resolved" | "dismissed" | "open",
+  ) => {
+    setProcessingBugId(report.id);
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(
+        getApiUrl(`/api/admin/bug-reports/${report.id}`),
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ status }),
+        },
+      );
+      if (!res.ok) throw new Error("Failed to update bug report");
+      setBugReports((prev) =>
+        prev.map((b) => (b.id === report.id ? { ...b, status } : b)),
+      );
+      showToast(
+        status === "resolved"
+          ? "Marked as resolved."
+          : status === "dismissed"
+            ? "Bug report dismissed."
+            : "Bug report reopened.",
+        "success",
+      );
+      fetchOverview();
+    } catch (err) {
+      console.error("Update bug report error:", err);
+      showToast("Failed to update bug report.", "error");
+    } finally {
+      setProcessingBugId(null);
+    }
+  };
+
+  const handleDeleteBugReport = (report: any) => {
+    showConfirm({
+      title: "Delete Bug Report",
+      message: `This permanently deletes the "${report.category}" report. This cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: async () => {
+        setProcessingBugId(report.id);
+        try {
+          const token = await AsyncStorage.getItem("reserva_token");
+          const res = await fetch(
+            getApiUrl(`/api/admin/bug-reports/${report.id}`),
+            {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          if (!res.ok) throw new Error("Failed to delete bug report");
+          setBugReports((prev) => prev.filter((b) => b.id !== report.id));
+          showToast("Bug report deleted.", "success");
+          fetchOverview();
+          fetchAuditLog();
+        } catch (err) {
+          console.error("Delete bug report error:", err);
+          showToast("Failed to delete bug report.", "error");
+        } finally {
+          setProcessingBugId(null);
+        }
+      },
+    });
+  };
+
+  // ── Fetch dashboard overview stats ─────────────────────────────────────────
+
+  const fetchOverview = async () => {
+    setLoadingOverview(true);
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl("/api/admin/overview"), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch overview");
+      const data = await res.json();
+      setOverviewStats(data);
+    } catch (err) {
+      console.error("Admin Fetch Overview Error:", err);
+      setOverviewStats(null);
+    } finally {
+      setLoadingOverview(false);
+    }
+  };
+
+  // ── Fetch recent moderation activity ───────────────────────────────────────
+
+  const fetchAuditLog = async () => {
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(getApiUrl("/api/admin/audit-log"), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch audit log");
+      const data = await res.json();
+      setAuditLog(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Admin Fetch Audit Log Error:", err);
+      setAuditLog([]);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
     fetchPendingRestaurants();
     fetchFeaturedRestaurants();
     fetchAllApprovedRestaurants();
     fetchBugReports();
+    fetchOverview();
+    fetchAuditLog();
   }, []);
 
   // ── Handle approval / decline ──────────────────────────────────────────────
@@ -430,6 +613,8 @@ export default function AdminDashboard() {
               : `"${restaurantName}" application has been declined.`,
             "success",
           );
+          fetchOverview();
+          if (action === "decline") fetchAuditLog();
         } catch (err) {
           console.error(`Admin ${action} error:`, err);
           showToast(`Failed to ${action} restaurant.`, "error");
@@ -578,6 +763,8 @@ export default function AdminDashboard() {
           );
           setSelectedRestaurant(null);
           showToast(`"${restaurant.name}" has been deleted.`, "success");
+          fetchOverview();
+          fetchAuditLog();
         } catch (err) {
           console.error("Delete restaurant error:", err);
           showToast("Failed to delete restaurant.", "error");
@@ -709,6 +896,96 @@ export default function AdminDashboard() {
     }
   };
 
+  // ── New: edit / cancel an individual reservation ───────────────────────────
+
+  const openEditReservation = (rv: any) => {
+    setEditingReservation(rv);
+    setReservationEditForm({
+      date: rv.date || "",
+      time: rv.start_time || rv.time || "",
+      people_count: String(rv.people_count ?? ""),
+      notes: rv.notes || "",
+    });
+  };
+
+  const handleSaveReservationEdit = async () => {
+    if (!selectedRestaurant || !editingReservation) return;
+    if (!reservationEditForm.date || !reservationEditForm.time) {
+      showToast("Date and time are required.", "error");
+      return;
+    }
+    setSavingReservation(true);
+    try {
+      const token = await AsyncStorage.getItem("reserva_token");
+      const res = await fetch(
+        getApiUrl(
+          `/api/admin/restaurants/${selectedRestaurant.id}/reservations/${editingReservation.id}`,
+        ),
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            date: reservationEditForm.date,
+            time: reservationEditForm.time,
+            people_count: Number(reservationEditForm.people_count) || 1,
+            notes: reservationEditForm.notes,
+          }),
+        },
+      );
+      if (!res.ok) throw new Error("Failed to update reservation");
+      setEditingReservation(null);
+      fetchRestaurantReservations(selectedRestaurant.id);
+      fetchAuditLog();
+      showToast("Reservation updated.", "success");
+    } catch (err) {
+      console.error("Edit reservation error:", err);
+      showToast("Failed to update reservation.", "error");
+    } finally {
+      setSavingReservation(false);
+    }
+  };
+
+  const handleCancelReservation = (rv: any) => {
+    if (!selectedRestaurant) return;
+    showConfirm({
+      title: "Cancel Reservation",
+      message: `Cancel the reservation for ${
+        rv.customer_name
+          ? `${rv.customer_name} ${rv.customer_surname || ""}`
+          : rv.guest_name || "this guest"
+      } on ${rv.date} at ${rv.time}?`,
+      confirmLabel: "Cancel Reservation",
+      destructive: true,
+      onConfirm: async () => {
+        setCancellingReservationId(rv.id);
+        try {
+          const token = await AsyncStorage.getItem("reserva_token");
+          const res = await fetch(
+            getApiUrl(
+              `/api/admin/restaurants/${selectedRestaurant.id}/reservations/${rv.id}`,
+            ),
+            {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          if (!res.ok) throw new Error("Failed to cancel reservation");
+          fetchRestaurantReservations(selectedRestaurant.id);
+          fetchAuditLog();
+          showToast("Reservation cancelled.", "success");
+        } catch (err) {
+          console.error("Cancel reservation error:", err);
+          showToast("Failed to cancel reservation.", "error");
+        } finally {
+          setCancellingReservationId(null);
+        }
+      },
+    });
+  };
+
   // ── New: user edit / delete ────────────────────────────────────────────────
 
   const openEditUser = (user: any) => {
@@ -766,6 +1043,8 @@ export default function AdminDashboard() {
           if (!res.ok) throw new Error(data?.error || "Failed to delete user");
           setUsers((prev) => prev.filter((u) => u.id !== user.id));
           showToast("User deleted.", "success");
+          fetchOverview();
+          fetchAuditLog();
         } catch (err: any) {
           console.error("Delete user error:", err);
           showToast(err?.message || "Failed to delete user.", "error");
@@ -840,6 +1119,21 @@ export default function AdminDashboard() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.tabsContainer}
         >
+          <AdminTabButton
+            active={activeTab === "overview"}
+            onClick={() => {
+              setActiveTab("overview");
+              fetchOverview();
+              fetchAuditLog();
+            }}
+            icon={
+              <LayoutDashboard
+                size={18}
+                color={activeTab === "overview" ? "white" : "#9CA3AF"}
+              />
+            }
+            label="Overview"
+          />
           <AdminTabButton
             active={activeTab === "requests"}
             onClick={() => setActiveTab("requests")}
@@ -955,34 +1249,127 @@ export default function AdminDashboard() {
             </View>
           ) : (
             <Text style={styles.tabTitle}>
-              {activeTab === "requests"
-                ? `Pending Approvals${pendingRestaurants.length > 0 ? ` (${pendingRestaurants.length})` : ""}`
-                : activeTab === "restaurants"
-                  ? `Restaurants${allApprovedRestaurants.length > 0 ? ` (${allApprovedRestaurants.length})` : ""}`
-                  : activeTab === "bugs"
-                    ? `Bug Reports${bugReports.length > 0 ? ` (${bugReports.length})` : ""}`
-                    : activeTab === "users"
-                      ? "Users"
-                      : "Payments"}
+              {activeTab === "overview"
+                ? "Overview"
+                : activeTab === "requests"
+                  ? `Pending Approvals${pendingRestaurants.length > 0 ? ` (${pendingRestaurants.length})` : ""}`
+                  : activeTab === "restaurants"
+                    ? `Restaurants${allApprovedRestaurants.length > 0 ? ` (${allApprovedRestaurants.length})` : ""}`
+                    : activeTab === "bugs"
+                      ? `Bug Reports${bugReports.length > 0 ? ` (${bugReports.length})` : ""}`
+                      : activeTab === "users"
+                        ? "Users"
+                        : "Payments"}
             </Text>
           )}
 
-          <View style={styles.searchBar}>
-            <Search size={16} color="#9CA3AF" />
-            <TextInput
-              placeholder="Search..."
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholderTextColor="#9CA3AF"
-              style={styles.searchInput}
-            />
-          </View>
+          {activeTab !== "overview" && (
+            <View style={styles.searchBar}>
+              <Search size={16} color="#9CA3AF" />
+              <TextInput
+                placeholder="Search..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholderTextColor="#9CA3AF"
+                style={styles.searchInput}
+              />
+            </View>
+          )}
         </View>
 
         {loading ? (
           <View style={styles.loader}>
             <ActivityIndicator size="large" color="#2D2D2D" />
           </View>
+        ) : activeTab === "overview" ? (
+          // ── Overview: at-a-glance stats + recent moderation activity ────────
+          <ScrollView contentContainerStyle={{ paddingBottom: 32 }}>
+            {loadingOverview && !overviewStats ? (
+              <ActivityIndicator
+                size="small"
+                color="#2D2D2D"
+                style={{ marginVertical: 24 }}
+              />
+            ) : (
+              <View style={styles.overviewGrid}>
+                <View style={styles.overviewCard}>
+                  <Clock size={18} color="#d97706" />
+                  <Text style={styles.overviewCardValue}>
+                    {overviewStats?.pendingApplications ?? "–"}
+                  </Text>
+                  <Text style={styles.overviewCardLabel}>
+                    Pending Applications
+                  </Text>
+                </View>
+                <View style={styles.overviewCard}>
+                  <Users size={18} color="#2563EB" />
+                  <Text style={styles.overviewCardValue}>
+                    {overviewStats?.totalUsers ?? "–"}
+                  </Text>
+                  <Text style={styles.overviewCardLabel}>Total Users</Text>
+                </View>
+                <View style={styles.overviewCard}>
+                  <Store size={18} color="#7C8B6D" />
+                  <Text style={styles.overviewCardValue}>
+                    {overviewStats?.totalRestaurants ?? "–"}
+                  </Text>
+                  <Text style={styles.overviewCardLabel}>
+                    Approved Restaurants
+                  </Text>
+                </View>
+                <View style={styles.overviewCard}>
+                  <Calendar size={18} color="#10B981" />
+                  <Text style={styles.overviewCardValue}>
+                    {overviewStats?.reservationsToday ?? "–"}
+                  </Text>
+                  <Text style={styles.overviewCardLabel}>
+                    Reservations Today
+                  </Text>
+                </View>
+                <View style={styles.overviewCard}>
+                  <Bug size={18} color="#EF4444" />
+                  <Text style={styles.overviewCardValue}>
+                    {overviewStats?.openBugReports ?? "–"}
+                  </Text>
+                  <Text style={styles.overviewCardLabel}>Open Bug Reports</Text>
+                </View>
+              </View>
+            )}
+
+            <Text style={styles.overviewSectionTitle}>Recent Activity</Text>
+            {auditLog.length === 0 ? (
+              <View style={styles.emptyState}>
+                <View style={styles.emptyIcon}>
+                  <History size={32} color="#9CA3AF" />
+                </View>
+                <Text style={styles.emptyTitle}>No Activity Yet</Text>
+                <Text style={styles.emptySubtitle}>
+                  Moderation actions like declines and deletions will show up
+                  here.
+                </Text>
+              </View>
+            ) : (
+              auditLog.map((entry: any) => (
+                <View key={entry.id} style={styles.auditRow}>
+                  <View style={styles.auditIconCircle}>
+                    <History size={14} color="#7C8B6D" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.auditText}>
+                      {formatAuditAction(entry)}
+                    </Text>
+                    <Text style={styles.auditMeta}>
+                      {entry.admin_name
+                        ? `${entry.admin_name} ${entry.admin_surname || ""}`
+                        : "Admin"}{" "}
+                      · {new Date(entry.created_at).toLocaleString()}
+                      {entry.reason ? ` · "${entry.reason}"` : ""}
+                    </Text>
+                  </View>
+                </View>
+              ))
+            )}
+          </ScrollView>
         ) : activeTab === "requests" ? (
           // ── Pending restaurant applications ────────────────────────────────
           <FlatList
@@ -1057,45 +1444,152 @@ export default function AdminDashboard() {
                 </Text>
               </View>
             }
-            renderItem={({ item }) => (
-              <View style={styles.userCard}>
-                <Text style={styles.userName}>{item.category}</Text>
-                <Text style={styles.userEmail}>
-                  {item.name
-                    ? `${item.name} ${item.surname || ""}`
-                    : "Unknown user"}
-                  {item.email ? ` · ${item.email}` : ""}
-                  {item.phone ? ` · ${item.phone}` : ""}
-                </Text>
-                {item.restaurant_name && (
-                  <Text
+            renderItem={({ item }) => {
+              const status = item.status || "open";
+              const isProcessing = processingBugId === item.id;
+              return (
+                <View style={styles.userCard}>
+                  <View
                     style={{
-                      fontSize: 12,
-                      fontWeight: "700",
-                      color: "#d97706",
-                      marginTop: 6,
+                      flexDirection: "row",
+                      justifyContent: "space-between",
+                      alignItems: "flex-start",
                     }}
                   >
-                    Restaurant: {item.restaurant_name}
+                    <Text style={[styles.userName, { flex: 1 }]}>
+                      {item.category}
+                    </Text>
+                    <View
+                      style={[
+                        styles.reservationStatusChip,
+                        status === "resolved"
+                          ? { backgroundColor: "rgba(16,185,129,0.1)" }
+                          : status === "dismissed"
+                            ? { backgroundColor: "rgba(156,163,175,0.15)" }
+                            : { backgroundColor: "rgba(217,119,6,0.1)" },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.reservationStatusText,
+                          status === "resolved"
+                            ? { color: "#10B981" }
+                            : status === "dismissed"
+                              ? { color: "#6B7280" }
+                              : { color: "#d97706" },
+                        ]}
+                      >
+                        {status}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={styles.userEmail}>
+                    {item.name
+                      ? `${item.name} ${item.surname || ""}`
+                      : "Unknown user"}
+                    {item.email ? ` · ${item.email}` : ""}
+                    {item.phone ? ` · ${item.phone}` : ""}
                   </Text>
-                )}
-                {item.details && (
+                  {item.restaurant_name && (
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        fontWeight: "700",
+                        color: "#d97706",
+                        marginTop: 6,
+                      }}
+                    >
+                      Restaurant: {item.restaurant_name}
+                    </Text>
+                  )}
+                  {item.details && (
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        color: "#4B5563",
+                        marginTop: 6,
+                        lineHeight: 19,
+                      }}
+                    >
+                      {item.details}
+                    </Text>
+                  )}
                   <Text
+                    style={{ fontSize: 10, color: "#9CA3AF", marginTop: 8 }}
+                  >
+                    {new Date(item.created_at).toLocaleString()}
+                  </Text>
+
+                  <View
                     style={{
-                      fontSize: 13,
-                      color: "#4B5563",
-                      marginTop: 6,
-                      lineHeight: 19,
+                      flexDirection: "row",
+                      gap: 8,
+                      marginTop: 12,
+                      flexWrap: "wrap",
                     }}
                   >
-                    {item.details}
-                  </Text>
-                )}
-                <Text style={{ fontSize: 10, color: "#9CA3AF", marginTop: 8 }}>
-                  {new Date(item.created_at).toLocaleString()}
-                </Text>
-              </View>
-            )}
+                    {status !== "resolved" && (
+                      <TouchableOpacity
+                        disabled={isProcessing}
+                        onPress={() =>
+                          handleSetBugReportStatus(item, "resolved")
+                        }
+                        style={styles.bugActionBtn}
+                      >
+                        <CheckCircle size={14} color="#10B981" />
+                        <Text
+                          style={[styles.bugActionText, { color: "#10B981" }]}
+                        >
+                          Resolve
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    {status !== "dismissed" && (
+                      <TouchableOpacity
+                        disabled={isProcessing}
+                        onPress={() =>
+                          handleSetBugReportStatus(item, "dismissed")
+                        }
+                        style={styles.bugActionBtn}
+                      >
+                        <XCircle size={14} color="#6B7280" />
+                        <Text
+                          style={[styles.bugActionText, { color: "#6B7280" }]}
+                        >
+                          Dismiss
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    {status !== "open" && (
+                      <TouchableOpacity
+                        disabled={isProcessing}
+                        onPress={() => handleSetBugReportStatus(item, "open")}
+                        style={styles.bugActionBtn}
+                      >
+                        <RotateCcw size={14} color="#d97706" />
+                        <Text
+                          style={[styles.bugActionText, { color: "#d97706" }]}
+                        >
+                          Reopen
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      disabled={isProcessing}
+                      onPress={() => handleDeleteBugReport(item)}
+                      style={styles.bugActionBtn}
+                    >
+                      <Trash2 size={14} color="#EF4444" />
+                      <Text
+                        style={[styles.bugActionText, { color: "#EF4444" }]}
+                      >
+                        Delete
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            }}
           />
         ) : activeTab === "featured" ? (
           // ── Featured restaurants ───────────────────────────────────────────
@@ -1793,6 +2287,23 @@ export default function AdminDashboard() {
                           {rv.status}
                         </Text>
                       </View>
+                      {rv.status !== "cancelled" && (
+                        <View style={styles.reservationRowActions}>
+                          <TouchableOpacity
+                            style={styles.reservationActionBtn}
+                            onPress={() => openEditReservation(rv)}
+                          >
+                            <Edit size={13} color="#9CA3AF" />
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.reservationActionBtn}
+                            disabled={cancellingReservationId === rv.id}
+                            onPress={() => handleCancelReservation(rv)}
+                          >
+                            <X size={13} color="#EF4444" />
+                          </TouchableOpacity>
+                        </View>
+                      )}
                     </View>
                   ))
                 )}
@@ -1800,6 +2311,98 @@ export default function AdminDashboard() {
             </ScrollView>
           </View>
         ) : null}
+      </Modal>
+
+      {/* ── Edit Reservation Modal ──────────────────────────────────────────── */}
+      <Modal
+        visible={!!editingReservation}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditingReservation(null)}
+      >
+        <View style={styles.confirmOverlay}>
+          <View style={styles.formCard}>
+            <Text style={styles.confirmTitle}>Edit Reservation</Text>
+
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.detailLabel}>Date</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#9CA3AF"
+                  value={reservationEditForm.date}
+                  onChangeText={(t) =>
+                    setReservationEditForm((prev) => ({ ...prev, date: t }))
+                  }
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.detailLabel}>Time</Text>
+                <TextInput
+                  style={styles.formInput}
+                  placeholder="HH:MM"
+                  placeholderTextColor="#9CA3AF"
+                  value={reservationEditForm.time}
+                  onChangeText={(t) =>
+                    setReservationEditForm((prev) => ({ ...prev, time: t }))
+                  }
+                />
+              </View>
+              <View style={{ width: 90 }}>
+                <Text style={styles.detailLabel}>Guests</Text>
+                <TextInput
+                  style={styles.formInput}
+                  keyboardType="number-pad"
+                  placeholderTextColor="#9CA3AF"
+                  value={reservationEditForm.people_count}
+                  onChangeText={(t) =>
+                    setReservationEditForm((prev) => ({
+                      ...prev,
+                      people_count: t,
+                    }))
+                  }
+                />
+              </View>
+            </View>
+
+            <Text style={[styles.detailLabel, { marginTop: 10 }]}>
+              Notes (optional)
+            </Text>
+            <TextInput
+              style={[styles.formInput, { height: 70 }]}
+              multiline
+              placeholderTextColor="#9CA3AF"
+              value={reservationEditForm.notes}
+              onChangeText={(t) =>
+                setReservationEditForm((prev) => ({ ...prev, notes: t }))
+              }
+            />
+
+            <View style={styles.confirmActions}>
+              <TouchableOpacity
+                onPress={() => setEditingReservation(null)}
+                style={styles.confirmCancelBtn}
+              >
+                <Text style={styles.confirmCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSaveReservationEdit}
+                disabled={savingReservation}
+                style={[
+                  styles.confirmActionBtn,
+                  { backgroundColor: "#7C8B6D" },
+                ]}
+              >
+                {savingReservation ? (
+                  <ActivityIndicator size="small" color="white" />
+                ) : (
+                  <Text style={styles.confirmActionText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       {/* ── Add Reservation Modal ──────────────────────────────────────────── */}
@@ -3273,5 +3876,97 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "900",
     textTransform: "uppercase",
+  },
+  bugActionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "rgba(0,0,0,0.03)",
+  },
+  bugActionText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  reservationRowActions: {
+    flexDirection: "row",
+    gap: 6,
+    marginLeft: 8,
+  },
+  reservationActionBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.04)",
+  },
+  overviewGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  overviewCard: {
+    flexBasis: "47%",
+    flexGrow: 1,
+    backgroundColor: "white",
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.06)",
+  },
+  overviewCardValue: {
+    fontSize: 26,
+    fontWeight: "900",
+    color: "#2D2D2D",
+    marginTop: 10,
+  },
+  overviewCardLabel: {
+    fontSize: 12,
+    color: "#9CA3AF",
+    marginTop: 2,
+    fontWeight: "600",
+  },
+  overviewSectionTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#2D2D2D",
+    marginTop: 24,
+    marginBottom: 8,
+    paddingHorizontal: 16,
+  },
+  auditRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    backgroundColor: "white",
+    borderRadius: 12,
+    padding: 12,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.05)",
+  },
+  auditIconCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(124,139,109,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  auditText: {
+    fontSize: 12,
+    color: "#4B5563",
+    flex: 1,
+  },
+  auditMeta: {
+    fontSize: 10,
+    color: "#9CA3AF",
+    marginTop: 3,
   },
 });

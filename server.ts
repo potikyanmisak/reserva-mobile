@@ -149,6 +149,32 @@ const sendEmail = async (to: string, subject: string, html: string) => {
 let db: any;
 let dbPathForBackup: string = "";
 
+// Records an admin moderation action (decline, delete, cancel, edit, etc.)
+// so there's a record of who did what and why. Never throws — logging
+// failures shouldn't block the underlying action.
+function logAudit(
+  adminId: number | undefined,
+  action: string,
+  targetType: string,
+  targetId: number | string | null | undefined,
+  reason?: string | null,
+) {
+  try {
+    if (!db) return;
+    db.prepare(
+      "INSERT INTO admin_audit_log (admin_id, action, target_type, target_id, reason) VALUES (?, ?, ?, ?, ?)",
+    ).run(
+      adminId ?? null,
+      action,
+      targetType,
+      targetId ?? null,
+      reason ?? null,
+    );
+  } catch (err) {
+    console.error("[Reserva] Audit log error:", err);
+  }
+}
+
 async function sendPushNotification(
   pushToken: string | null,
   title: string,
@@ -618,6 +644,22 @@ async function startServer() {
     if (!bugTableInfo.some((c: any) => c.name === "restaurant_id")) {
       db.exec("ALTER TABLE bug_reports ADD COLUMN restaurant_id INTEGER");
     }
+    if (!bugTableInfo.some((c: any) => c.name === "status")) {
+      db.exec("ALTER TABLE bug_reports ADD COLUMN status TEXT DEFAULT 'open'");
+    }
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS admin_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER,
+        action TEXT,
+        target_type TEXT,
+        target_id INTEGER,
+        reason TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(admin_id) REFERENCES users(id)
+      );
+    `);
 
     const tableTableInfo = db.prepare("PRAGMA table_info(tables)").all();
     if (!tableTableInfo.some((col: any) => col.name === "shape")) {
@@ -1421,6 +1463,13 @@ async function startServer() {
           "UPDATE restaurants SET status = 'declined' WHERE id = ?",
         ).run(req.params.id);
         const { reason } = req.body;
+        logAudit(
+          req.user.id,
+          "decline_restaurant",
+          "restaurant",
+          req.params.id,
+          reason || null,
+        );
         sendEmail(
           restaurant.email,
           "Update on your Reserva application",
@@ -1465,7 +1514,9 @@ async function startServer() {
       if (req.user.role !== "admin")
         return res.status(403).json({ error: "Not authorized" });
       const id = req.params.id;
+      const { reason } = req.body || {};
       try {
+        logAudit(req.user.id, "delete_restaurant", "restaurant", id, reason);
         db.prepare("DELETE FROM restaurant_images WHERE restaurant_id = ?").run(
           id,
         );
@@ -1582,6 +1633,103 @@ async function startServer() {
         } catch (err) {
           console.error("[Reserva] Admin add reservation error:", err);
           res.status(500).json({ error: "Failed to add reservation" });
+        }
+      },
+    );
+
+    // Admin: edit an individual reservation's details (date, time, people
+    // count, notes, status) directly — for handling disputes or corrections
+    // a customer/restaurant calls in about.
+    app.patch(
+      "/api/admin/restaurants/:id/reservations/:reservationId",
+      authenticate,
+      (req: any, res: any) => {
+        if (req.user.role !== "admin")
+          return res.status(403).json({ error: "Not authorized" });
+        const { id, reservationId } = req.params;
+        const { date, time, people_count, notes, status } = req.body;
+        try {
+          const existing: any = db
+            .prepare(
+              "SELECT * FROM reservations WHERE id = ? AND restaurant_id = ?",
+            )
+            .get(reservationId, id);
+          if (!existing)
+            return res.status(404).json({ error: "Reservation not found" });
+
+          db.prepare(
+            `UPDATE reservations SET
+              date = COALESCE(?, date),
+              time = COALESCE(?, time),
+              start_time = COALESCE(?, start_time),
+              people_count = COALESCE(?, people_count),
+              notes = COALESCE(?, notes),
+              status = COALESCE(?, status)
+            WHERE id = ?`,
+          ).run(
+            date ?? null,
+            time ?? null,
+            time ?? null,
+            people_count ?? null,
+            notes ?? null,
+            status ?? null,
+            reservationId,
+          );
+
+          logAudit(
+            req.user.id,
+            "edit_reservation",
+            "reservation",
+            reservationId,
+            null,
+          );
+
+          const updated = db
+            .prepare("SELECT * FROM reservations WHERE id = ?")
+            .get(reservationId);
+          res.json({ success: true, reservation: updated });
+        } catch (err) {
+          console.error("[Reserva] Admin edit reservation error:", err);
+          res.status(500).json({ error: "Failed to update reservation" });
+        }
+      },
+    );
+
+    // Admin: cancel an individual reservation. This marks it cancelled
+    // rather than hard-deleting the row, so history/reporting stays intact.
+    app.delete(
+      "/api/admin/restaurants/:id/reservations/:reservationId",
+      authenticate,
+      (req: any, res: any) => {
+        if (req.user.role !== "admin")
+          return res.status(403).json({ error: "Not authorized" });
+        const { id, reservationId } = req.params;
+        const { reason } = req.body || {};
+        try {
+          const existing: any = db
+            .prepare(
+              "SELECT * FROM reservations WHERE id = ? AND restaurant_id = ?",
+            )
+            .get(reservationId, id);
+          if (!existing)
+            return res.status(404).json({ error: "Reservation not found" });
+
+          db.prepare(
+            "UPDATE reservations SET status = 'cancelled' WHERE id = ?",
+          ).run(reservationId);
+
+          logAudit(
+            req.user.id,
+            "cancel_reservation",
+            "reservation",
+            reservationId,
+            reason,
+          );
+
+          res.json({ success: true });
+        } catch (err) {
+          console.error("[Reserva] Admin cancel reservation error:", err);
+          res.status(500).json({ error: "Failed to cancel reservation" });
         }
       },
     );
@@ -3187,11 +3335,13 @@ async function startServer() {
         return res
           .status(400)
           .json({ error: "You cannot delete your own admin account." });
+      const { reason } = req.body || {};
       try {
         const target: any = db
           .prepare("SELECT id, role FROM users WHERE id = ?")
           .get(targetId);
         if (!target) return res.status(404).json({ error: "User not found" });
+        logAudit(req.user.id, "delete_user", "user", targetId, reason);
         db.prepare("DELETE FROM notifications WHERE user_id = ?").run(targetId);
         db.prepare("DELETE FROM reservations WHERE customer_id = ?").run(
           targetId,
@@ -3269,6 +3419,136 @@ async function startServer() {
       } catch (err) {
         console.error("[Reserva] Fetch bug reports error:", err);
         res.status(500).json({ error: "Failed to fetch bug reports" });
+      }
+    });
+
+    // Mark a bug report resolved/dismissed/reopened.
+    app.patch("/api/admin/bug-reports/:id", authenticate, (req: any, res) => {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Not authorized" });
+      const { status } = req.body;
+      const allowed = ["open", "resolved", "dismissed"];
+      if (!allowed.includes(status))
+        return res.status(400).json({ error: "Invalid status" });
+      try {
+        const existing = db
+          .prepare("SELECT id FROM bug_reports WHERE id = ?")
+          .get(req.params.id);
+        if (!existing)
+          return res.status(404).json({ error: "Bug report not found" });
+        db.prepare("UPDATE bug_reports SET status = ? WHERE id = ?").run(
+          status,
+          req.params.id,
+        );
+        logAudit(
+          req.user.id,
+          `bug_report_${status}`,
+          "bug_report",
+          req.params.id,
+          null,
+        );
+        res.json({ success: true, status });
+      } catch (err) {
+        console.error("[Reserva] Update bug report error:", err);
+        res.status(500).json({ error: "Failed to update bug report" });
+      }
+    });
+
+    app.delete(
+      "/api/admin/bug-reports/:id",
+      authenticate,
+      (req: any, res: any) => {
+        if (req.user.role !== "admin")
+          return res.status(403).json({ error: "Not authorized" });
+        try {
+          const existing = db
+            .prepare("SELECT id FROM bug_reports WHERE id = ?")
+            .get(req.params.id);
+          if (!existing)
+            return res.status(404).json({ error: "Bug report not found" });
+          db.prepare("DELETE FROM bug_reports WHERE id = ?").run(req.params.id);
+          logAudit(
+            req.user.id,
+            "delete_bug_report",
+            "bug_report",
+            req.params.id,
+            null,
+          );
+          res.json({ success: true });
+        } catch (err) {
+          console.error("[Reserva] Delete bug report error:", err);
+          res.status(500).json({ error: "Failed to delete bug report" });
+        }
+      },
+    );
+
+    // ── Admin: dashboard overview stats ─────────────────────────────────────
+    app.get("/api/admin/overview", authenticate, (req: any, res: any) => {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Not authorized" });
+      try {
+        const pendingApplications = (
+          db
+            .prepare(
+              "SELECT COUNT(*) as count FROM restaurants WHERE status = 'pending'",
+            )
+            .get() as any
+        ).count;
+        const totalUsers = (
+          db.prepare("SELECT COUNT(*) as count FROM users").get() as any
+        ).count;
+        const totalRestaurants = (
+          db
+            .prepare(
+              "SELECT COUNT(*) as count FROM restaurants WHERE status = 'approved'",
+            )
+            .get() as any
+        ).count;
+        const reservationsToday = (
+          db
+            .prepare(
+              "SELECT COUNT(*) as count FROM reservations WHERE date = date('now')",
+            )
+            .get() as any
+        ).count;
+        const openBugReports = (
+          db
+            .prepare(
+              "SELECT COUNT(*) as count FROM bug_reports WHERE status IS NULL OR status = 'open'",
+            )
+            .get() as any
+        ).count;
+        res.json({
+          pendingApplications,
+          totalUsers,
+          totalRestaurants,
+          reservationsToday,
+          openBugReports,
+        });
+      } catch (err) {
+        console.error("[Reserva] Admin overview error:", err);
+        res.status(500).json({ error: "Failed to load overview" });
+      }
+    });
+
+    // ── Admin: recent moderation activity ───────────────────────────────────
+    app.get("/api/admin/audit-log", authenticate, (req: any, res: any) => {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Not authorized" });
+      try {
+        const entries = db
+          .prepare(
+            `SELECT a.*, u.name as admin_name, u.surname as admin_surname
+             FROM admin_audit_log a
+             LEFT JOIN users u ON a.admin_id = u.id
+             ORDER BY a.created_at DESC
+             LIMIT 100`,
+          )
+          .all();
+        res.json(entries);
+      } catch (err) {
+        console.error("[Reserva] Fetch audit log error:", err);
+        res.status(500).json({ error: "Failed to fetch audit log" });
       }
     });
   } catch (err) {

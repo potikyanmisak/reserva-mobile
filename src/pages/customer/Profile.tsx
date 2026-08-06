@@ -6,7 +6,7 @@ import {
   TouchableOpacity,
   Image,
   StyleSheet,
-  Dimensions,
+  useWindowDimensions,
   TextInput,
   Switch,
   ActivityIndicator,
@@ -54,8 +54,6 @@ import * as ImagePicker from "expo-image-picker";
 import { getApiUrl } from "../../lib/api";
 import { useSettings } from "../../lib/SettingsContext";
 import { RefreshControl } from "react-native";
-
-const { width } = Dimensions.get("window");
 
 const API_BASE_URL = getApiUrl("/api");
 
@@ -719,6 +717,7 @@ function ReviewModal({
   token: string | null;
 }) {
   const { t } = useLanguage();
+  const { width } = useWindowDimensions();
   const [step, setStep] = React.useState<"pick" | "write" | "done">(
     visitedRestaurants.length === 0 ? "pick" : "pick",
   );
@@ -749,7 +748,12 @@ function ReviewModal({
   if (step === "done") {
     return (
       <View style={styles.modalOverlay}>
-        <View style={styles.modalContentSmall}>
+        <View
+          style={[
+            styles.modalContentSmall,
+            { width: Math.min(width * 0.8, 360) },
+          ]}
+        >
           <View style={styles.successIconCircle}>
             <ThumbsUp size={32} color="#5FB26B" />
           </View>
@@ -919,7 +923,7 @@ function SupportModal({
   onClose,
   token,
   userId,
-  reservations
+  reservations,
 }: {
   onClose: () => void;
   token: string | null;
@@ -927,7 +931,10 @@ function SupportModal({
   reservations: any[];
 }) {
   const { t } = useLanguage();
-  const [step, setStep] = React.useState<"main" | "bugOptions" | "bugDetails" | "sent">("main",);
+  const { width } = useWindowDimensions();
+  const [step, setStep] = React.useState<
+    "main" | "bugOptions" | "bugDetails" | "sent"
+  >("main");
   const [category, setCategory] = React.useState("");
   const [details, setDetails] = React.useState("");
   const [selectedRestaurant, setSelectedRestaurant] = React.useState<any>(null);
@@ -973,8 +980,6 @@ function SupportModal({
     ? !!selectedRestaurant && details.trim().length > 0
     : details.trim().length > 0;
 
-
-
   const handleGeneralFeedback = () => {
     // Opens Play Store / App Store
     const url = "https://play.google.com/store/apps/details?id=com.reserva.app";
@@ -987,7 +992,12 @@ function SupportModal({
   if (step === "sent") {
     return (
       <View style={styles.modalOverlay}>
-        <View style={styles.modalContentSmall}>
+        <View
+          style={[
+            styles.modalContentSmall,
+            { width: Math.min(width * 0.8, 360) },
+          ]}
+        >
           <View style={styles.successIconCircle}>
             <Send size={32} color="#5FB26B" />
           </View>
@@ -1817,7 +1827,6 @@ const styles = StyleSheet.create({
     borderColor: "rgba(0,0,0,0.05)",
   },
   modalContentSmall: {
-    width: width * 0.8,
     backgroundColor: "white",
     borderRadius: 40,
     padding: 32,

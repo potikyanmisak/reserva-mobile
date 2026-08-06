@@ -10,7 +10,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "../lib/AuthContext";
@@ -29,8 +29,6 @@ import {
 } from "lucide-react-native";
 import { theme } from "../theme";
 
-const { width } = Dimensions.get("window");
-
 import { getApiUrl } from "../lib/api";
 
 const EMPTY_LOGIN = { email: "", password: "" };
@@ -44,6 +42,8 @@ const EMPTY_SIGNUP = {
 };
 
 export default function AuthPage() {
+  const { width } = useWindowDimensions();
+  const cardWidth = Math.min(width - 48, 480);
   const insets = useSafeAreaInsets();
   const [isLogin, setIsLogin] = useState(true);
   const [role, setRole] = useState<"customer" | "owner">("customer");
@@ -370,7 +370,7 @@ export default function AuthPage() {
   if (step === 3) {
     return (
       <View style={styles.container}>
-        <View style={styles.authCard}>
+        <View style={[styles.authCard, { width: cardWidth }]}>
           <View style={styles.iconCircle}>
             <Camera color={theme.colors.charcoal} size={32} />
           </View>
@@ -427,7 +427,7 @@ export default function AuthPage() {
   if (step === 4) {
     return (
       <View style={styles.container}>
-        <View style={styles.authCard}>
+        <View style={[styles.authCard, { width: cardWidth }]}>
           <View style={styles.iconCircle}>
             <Mail color={theme.colors.charcoal} size={32} />
           </View>
@@ -483,7 +483,7 @@ export default function AuthPage() {
     const hasNum = /\d/.test(resetPasswordData.password);
     return (
       <View style={styles.container}>
-        <View style={styles.authCard}>
+        <View style={[styles.authCard, { width: cardWidth }]}>
           <View style={styles.iconCircle}>
             <Lock color={theme.colors.charcoal} size={32} />
           </View>
@@ -581,7 +581,7 @@ export default function AuthPage() {
     const isReset = step === 5;
     return (
       <View style={styles.container}>
-        <View style={styles.authCard}>
+        <View style={[styles.authCard, { width: cardWidth }]}>
           <View style={styles.iconCircle}>
             {isReset ? (
               <RefreshCw color={theme.colors.charcoal} size={32} />
@@ -679,7 +679,7 @@ export default function AuthPage() {
           <Text style={styles.tagline}>Fine dining, simplified.</Text>
         </View>
 
-        <View style={styles.authCard}>
+        <View style={[styles.authCard, { width: cardWidth }]}>
           <View style={styles.tabs}>
             <Pressable
               onPress={() => switchTab(true)}
@@ -1054,7 +1054,6 @@ const styles = StyleSheet.create({
     borderRadius: 40,
     borderWidth: 1,
     borderColor: theme.colors.glassBorder,
-    width: width - 48,
     alignSelf: "center",
   },
   tabs: {

@@ -9,7 +9,7 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  Dimensions,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
@@ -42,8 +42,6 @@ import * as ImagePicker from "expo-image-picker";
 import { WebView } from "react-native-webview";
 import { getApiUrl } from "../../lib/api";
 import { EXPERIENCE_GROUPS, AMENITIES, MOODS } from "../../lib/filterOptions";
-
-const { width } = Dimensions.get("window");
 
 const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY ?? "";
 
@@ -226,6 +224,9 @@ function useToast() {
 }
 
 export default function OwnerDashboard() {
+  const { width } = useWindowDimensions();
+  const mediaCardWidth = Math.min((width - 60) / 2, 220);
+  const tableCardWidth = Math.min((width - 78) / 4, 110);
   const insets = useSafeAreaInsets();
   const { user, token, logout } = useAuth();
   const navigation = useNavigation<any>();
@@ -1384,7 +1385,10 @@ export default function OwnerDashboard() {
               </View>
               <View style={styles.mediaGrid}>
                 {(restaurant.images || []).map((img: any, i: number) => (
-                  <View key={i} style={styles.mediaCard}>
+                  <View
+                    key={i}
+                    style={[styles.mediaCard, { width: mediaCardWidth }]}
+                  >
                     <Image
                       source={{ uri: img.url }}
                       style={styles.mediaImage}
@@ -1399,7 +1403,7 @@ export default function OwnerDashboard() {
                 ))}
                 <TouchableOpacity
                   onPress={() => pickImage("gallery")}
-                  style={styles.addMediaEmpty}
+                  style={[styles.addMediaEmpty, { width: mediaCardWidth }]}
                 >
                   <ImageIcon size={24} color="rgba(45, 45, 45, 0.4)" />
                   <Text style={styles.addMediaText}>
@@ -1430,7 +1434,10 @@ export default function OwnerDashboard() {
               </View>
               <View style={styles.mediaGrid}>
                 {(restaurant.menuImages || []).map((img: any, i: number) => (
-                  <View key={img.id || i} style={styles.mediaCard}>
+                  <View
+                    key={img.id || i}
+                    style={[styles.mediaCard, { width: mediaCardWidth }]}
+                  >
                     <Image
                       source={{ uri: img.url }}
                       style={styles.mediaImage}
@@ -1447,7 +1454,7 @@ export default function OwnerDashboard() {
                 ))}
                 <TouchableOpacity
                   onPress={pickMenuImage}
-                  style={styles.addMediaEmpty}
+                  style={[styles.addMediaEmpty, { width: mediaCardWidth }]}
                 >
                   <ImageIcon size={24} color="rgba(45, 45, 45, 0.4)" />
                   <Text style={styles.addMediaText}>
@@ -1725,7 +1732,10 @@ export default function OwnerDashboard() {
                   </View>
                 ) : (
                   resources.map((resource) => (
-                    <View key={resource.id} style={styles.tableCard}>
+                    <View
+                      key={resource.id}
+                      style={[styles.tableCard, { width: tableCardWidth }]}
+                    >
                       <View style={styles.tableCardHeader}>
                         <ResourceShapeIcon resource={resource} />
                         <TouchableOpacity
@@ -2332,7 +2342,6 @@ const styles = StyleSheet.create({
   addMediaButton: { padding: 10, backgroundColor: "#2D2D2D", borderRadius: 14 },
   mediaGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   mediaCard: {
-    width: (width - 60) / 2,
     height: 160,
     borderRadius: 24,
     overflow: "hidden",
@@ -2352,7 +2361,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   addMediaEmpty: {
-    width: (width - 60) / 2,
     height: 160,
     borderRadius: 24,
     borderWidth: 2,
@@ -2491,7 +2499,6 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   tableCard: {
-    width: (width - 78) / 4,
     aspectRatio: 1,
     backgroundColor: "white",
     borderRadius: 20,
