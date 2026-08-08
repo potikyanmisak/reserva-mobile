@@ -2512,7 +2512,6 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: 14, color: C.text },
   filterBtn: {
     width: 52,
-    height: 52,
     backgroundColor: C.white,
     borderRadius: 16,
     alignItems: "center",
