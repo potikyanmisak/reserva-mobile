@@ -186,6 +186,7 @@ export default function RestaurantDetail() {
       }
 
       setRestaurant(data);
+      setIsSaved(!!data.is_saved);
     } catch (err) {
       console.error(err);
     }
@@ -201,15 +202,27 @@ export default function RestaurantDetail() {
       return;
     }
     const token = await AsyncStorage.getItem("reserva_token");
-    const res = await fetch(getApiUrl("/api/collections"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ restaurant_id: id }),
-    });
-    if (res.ok) setIsSaved(true);
+    try {
+      if (isSaved) {
+        const res = await fetch(getApiUrl(`/api/collections/${id}`), {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) setIsSaved(false);
+      } else {
+        const res = await fetch(getApiUrl("/api/collections"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ restaurant_id: id }),
+        });
+        if (res.ok) setIsSaved(true);
+      }
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const analyzeReview = async (text: string) => {

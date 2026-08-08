@@ -1929,6 +1929,13 @@ async function startServer() {
           `SELECT r.*, u.name, u.surname, u.photo_url, (SELECT COUNT(*) FROM review_likes WHERE review_id = r.id AND user_id = ?) as is_liked FROM reviews r JOIN users u ON r.customer_id = u.id WHERE r.restaurant_id = ? ORDER BY r.created_at DESC`,
         )
         .all(userId, req.params.id);
+      const isSaved = userId
+        ? (db
+            .prepare(
+              "SELECT 1 FROM collections WHERE user_id = ? AND restaurant_id = ?",
+            )
+            .get(userId, req.params.id) as any)
+        : null;
       const result = {
         ...restaurant,
         latitude: restaurant.lat,
@@ -1940,6 +1947,7 @@ async function startServer() {
         menuImages,
         reviews,
         schedules,
+        is_saved: !!isSaved,
       };
       res.json(result);
     });
