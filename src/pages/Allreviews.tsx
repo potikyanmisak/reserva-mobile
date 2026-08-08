@@ -86,6 +86,27 @@ export default function AllReviews() {
     }
   };
 
+  const formatReviewDate = (dateStr: string): string => {
+    if (!dateStr) return "";
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return "";
+    const months = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
+    return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+  };
+
   const sortedReviews = useMemo(() => {
     const arr = [...reviews];
     if (sort === "rating") {
@@ -231,6 +252,11 @@ export default function AllReviews() {
                             />
                           ))}
                         </View>
+                        {!!review.created_at && (
+                          <Text style={styles.reviewDate}>
+                            {formatReviewDate(review.created_at)}
+                          </Text>
+                        )}
                       </View>
                     </View>
                     <TouchableOpacity
@@ -413,6 +439,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 2,
     marginTop: 2,
+  },
+  reviewDate: {
+    fontSize: 10,
+    color: "rgba(0,0,0,0.35)",
+    marginTop: 3,
+    fontWeight: "500",
   },
   likeBtn: {
     flexDirection: "row",
