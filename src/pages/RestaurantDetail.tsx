@@ -805,7 +805,7 @@ export default function RestaurantDetail() {
                 </TouchableOpacity>
               </View>
 
-              {user?.id !== restaurant.owner_id && (
+              {user?.id !== restaurant.owner_id && restaurant.can_review && (
                 <TouchableOpacity
                   onPress={() => setIsReviewing(!isReviewing)}
                   style={styles.writeReviewBtn}

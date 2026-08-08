@@ -1936,6 +1936,13 @@ async function startServer() {
             )
             .get(userId, req.params.id) as any)
         : null;
+      const canReview = userId
+        ? (db
+            .prepare(
+              "SELECT 1 FROM reservations WHERE customer_id = ? AND restaurant_id = ? AND status = 'completed'",
+            )
+            .get(userId, req.params.id) as any)
+        : null;
       const result = {
         ...restaurant,
         latitude: restaurant.lat,
@@ -1948,6 +1955,7 @@ async function startServer() {
         reviews,
         schedules,
         is_saved: !!isSaved,
+        can_review: !!canReview,
       };
       res.json(result);
     });
@@ -2284,6 +2292,16 @@ async function startServer() {
         return res
           .status(400)
           .json({ error: "Restaurant ID and rating are required" });
+      const eligible = db
+        .prepare(
+          "SELECT 1 FROM reservations WHERE customer_id = ? AND restaurant_id = ? AND status = 'completed'",
+        )
+        .get(req.user.id, restaurant_id);
+      if (!eligible)
+        return res.status(403).json({
+          error:
+            "You can only review a restaurant after a completed reservation",
+        });
       const categoriesStr = categories ? JSON.stringify(categories) : null;
       try {
         db.prepare(
