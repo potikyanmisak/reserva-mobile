@@ -788,7 +788,16 @@ export default function RestaurantDetail() {
                 <Text style={styles.reviewsHeading}>
                   {t("restaurant_detail.reviews")}
                 </Text>
-                <TouchableOpacity style={styles.seeAllBtn}>
+                <TouchableOpacity
+                  style={styles.seeAllBtn}
+                  onPress={() =>
+                    navigation.navigate("AllReviews", {
+                      id,
+                      restaurantName: restaurant.name,
+                      reviews: restaurant.reviews || [],
+                    })
+                  }
+                >
                   <Text style={styles.seeAllText}>
                     {t("restaurant_detail.see_all")}
                   </Text>

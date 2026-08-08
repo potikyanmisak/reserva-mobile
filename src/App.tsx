@@ -23,6 +23,7 @@ import CustomerDashboard from "./pages/customer/Dashboard";
 import Collections from "./pages/customer/Collections";
 import Profile from "./pages/customer/Profile";
 import RestaurantDetail from "./pages/RestaurantDetail";
+import AllReviews from "./pages/Allreviews";
 import ReservationPage from "./pages/ReservationPage";
 import OwnerDashboard from "./pages/owner/Dashboard";
 import OwnerGate from "./pages/owner/OwnerGate";
@@ -281,6 +282,7 @@ function AppNavigator({ fontsLoaded }: { fontsLoaded: boolean }) {
             name="RestaurantDetail"
             component={RestaurantDetail as any}
           />
+          <Stack.Screen name="AllReviews" component={AllReviews as any} />
           <Stack.Screen
             name="ReservationPage"
             component={ReservationPage as any}

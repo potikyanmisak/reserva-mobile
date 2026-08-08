@@ -156,6 +156,15 @@ export const en = {
     category_staff_behavior: "Staff Behavior",
     category_reservation_experience: "Reservation Experience",
   },
+  all_reviews: {
+    title: "Reviews",
+    sort_recent: "Most Recent",
+    sort_rating: "Highest Rated",
+    sort_liked: "Most Liked",
+    based_on: "Based on",
+    reviews_word: "reviews",
+    no_reviews: "No reviews yet",
+  },
   reservation: {
     title: "Reservation",
     select_date: "Select Date",
@@ -623,6 +632,15 @@ export const am = {
     category_pricing: "Գնագոյացում",
     category_staff_behavior: "Անձնակազմի վարք",
     category_reservation_experience: "Ամրագրման փորձառություն",
+  },
+  all_reviews: {
+    title: "Կարծիքներ",
+    sort_recent: "Ամենավերջինը",
+    sort_rating: "Ամենաբարձր գնահատված",
+    sort_liked: "Ամենադուրեկան",
+    based_on: "Հիմնված է",
+    reviews_word: "կարծիքի վրա",
+    no_reviews: "Դեռ կարծիքներ չկան",
   },
   reservation: {
     title: "Ամրագրում",
@@ -1092,6 +1110,15 @@ export const ru = {
     category_pricing: "Цены",
     category_staff_behavior: "Поведение персонала",
     category_reservation_experience: "Опыт бронирования",
+  },
+  all_reviews: {
+    title: "Отзывы",
+    sort_recent: "Сначала новые",
+    sort_rating: "По рейтингу",
+    sort_liked: "По популярности",
+    based_on: "На основе",
+    reviews_word: "отзывов",
+    no_reviews: "Пока нет отзывов",
   },
   reservation: {
     title: "Бронирование",
