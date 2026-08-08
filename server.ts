@@ -1216,7 +1216,14 @@ async function startServer() {
       if (outdoor === "true") {
         query += " AND r.outdoor_seating = 1";
       }
-      const all = db.prepare(query).all(...params);
+      const rows = db.prepare(query).all(...params) as any[];
+      const all = rows.map((r: any) => ({
+        ...r,
+        experience_types: parseJsonArray(r.experience_types),
+        amenities: parseJsonArray(r.amenities),
+        moods: parseJsonArray(r.moods),
+        outdoor_seating: r.outdoor_seating === 1,
+      }));
       const recommended = all.filter((r: any) => r.is_recommended === 1);
       res.json({ recommended, all });
     });
